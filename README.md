@@ -21,19 +21,39 @@ Monorepo with npm workspaces: `server/` and `client/`. Drizzle is installed at t
 ## Getting started
 
 ```bash
-docker compose up -d                            # Postgres 15 on 127.0.0.1:5433
-cp env.example .env                             # then set a real JWT_SECRET
-npm install
-npm run db:migrate                              # schema + constraints + sequences
-npm run db:seed                                 # demo clinic (see accounts below)
-npm run dev                                     # API :8080, client :5173
+cp env.example .env          # then set a real JWT_SECRET: openssl rand -hex 32
+./start.sh                   # Postgres + migrations + seed-if-empty + API + client
+./stop.sh                    # stop the app (add --db to stop Postgres too)
 ```
 
-Open <http://localhost:5173>. The Vite dev server proxies `/api` to the API, so no CORS setup is
-needed in development.
+`start.sh` loads the Node version pinned in `.nvmrc` (a system Node older than
+20.17 cannot run the pinned npm), starts Postgres through Docker Compose,
+applies migrations, seeds only when the database holds no staff yet, and leaves
+both servers running in the background with logs in `.run/`. Re-running it is
+safe.
 
-Other scripts: `npm run typecheck`, `npm run build`, `npm run db:generate` (after editing
-`server/src/db/schema/`).
+Open <http://localhost:5173>. The Vite dev server proxies `/api` to the API, so
+no CORS setup is needed in development.
+
+### Manual equivalent
+
+```bash
+docker compose up -d db
+npm install
+npm run db:migrate                            # schema + constraints + sequences
+npm run db:seed                               # demo clinic (see accounts below)
+npm run dev                                   # API :8080, client :5173
+```
+
+Other scripts: `npm run typecheck`, `npm run build`, `npm run db:generate`
+(after editing `server/src/db/schema/`).
+
+### Database volume
+
+`docker-compose.yml` fixes the project name to `hms` and marks the `hms_pgdata`
+volume `external`, so `docker compose down` cannot delete clinic data. On a
+fresh machine create the volume first (`docker volume create hms_pgdata`) or
+drop those lines to let Compose manage its own.
 
 ### Demo accounts
 
@@ -88,6 +108,8 @@ converts at the boundary — do not do arithmetic on a raw row value.
 ## Layout
 
 ```
+start.sh / stop.sh  one-command dev lifecycle; logs and PIDs in .run/
+.nvmrc              Node version the toolchain is known to work on
 server/src/
   db/schema/        tables + enums (one file, exported through index.ts)
   db/advanced.ts    constraints and indexes applied after each migration
@@ -113,3 +135,21 @@ client/src/
    (`ICU_DAILY_TARIFF`, `GENERAL_DAILY_TARIFF`) with a tariff table — ICU and coronary beds are
    currently charged a flat premium and everything else a general rate.
 5. Arrange Postgres backups. The audit log is append-only but has no retention policy yet.
+   A dump into a directory git ignores, as the handover did, is enough to start:
+   `docker exec hms-postgres pg_dump -U hms hms > "$(mkdir -p .run && echo .run)/backup.dump"`.
+
+### Remaining `npm audit` findings
+
+`drizzle-orm` (SQL identifier escaping) and `@fastify/jwt` / `fast-jwt` (a set of
+critical token-verification bypasses) were upgraded to fixed versions. Two
+moderate findings remain, both of which need a major-version jump that has not
+been validated against this codebase:
+
+- **vite 5 → 8** — the bundled esbuild lets any web page send requests to a
+  running dev server. Only relevant while `./start.sh` has Vite up; the fix is
+  to not browse elsewhere while developing, or upgrade and re-test the build.
+- **react-router-dom 6 → 7** — open redirect via a backslash in `<Link>` /
+  `useNavigate`, and an SSR-only `deserializeErrors()` issue. This app never
+  navigates to a user-supplied target and does not render on the server, so
+  neither path applies today.
+
