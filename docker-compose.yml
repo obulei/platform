@@ -1,0 +1,27 @@
+# Fixed project name so the container and volume keep the same identities no
+# matter which directory this is checked out into.
+name: hms
+
+services:
+  db:
+    image: postgres:15
+    container_name: hms-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: hms
+      POSTGRES_USER: hms
+      POSTGRES_PASSWORD: hms_dev_local
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - hms_pgdata:/var/lib/postgresql/data
+
+volumes:
+  # Reuses the volume created before this repo had a compose project of its own,
+  # so `docker compose down` cannot delete clinic data by accident. Create a
+  # volume named hms_pgdata (docker volume create hms_pgdata) on a fresh
+  # machine, or drop these two lines to let Compose manage its own.
+  hms_pgdata:
+    external: true
+    name: hms_pgdata
