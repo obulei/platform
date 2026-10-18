@@ -13,6 +13,7 @@ import { labRoutes } from './modules/lab.routes.js';
 import { billingRoutes } from './modules/billing.routes.js';
 import { dashboardRoutes } from './modules/dashboard.routes.js';
 import { auditRoutes } from './modules/audit.routes.js';
+import { reportRoutes } from './modules/reports.routes.js';
 
 const app = Fastify({
   logger: env.nodeEnv === 'test' ? false : { level: 'info' }
@@ -42,6 +43,7 @@ await app.register(appointmentRoutes);
 await app.register(inpatientRoutes);
 await app.register(pharmacyRoutes);
 await app.register(labRoutes);
+await app.register(reportRoutes);
 await app.register(billingRoutes);
 await app.register(dashboardRoutes);
 await app.register(auditRoutes);

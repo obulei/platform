@@ -5,7 +5,10 @@ export interface SessionUser {
   id: string;
   fullName: string;
   email: string;
+  /** The role this session is acting as. */
   role: string;
+  /** Every role the account has been granted. */
+  roles: string[];
   department?: string | null;
   specialty?: string | null;
 }
@@ -15,7 +18,9 @@ export class ApiError extends Error {
     message: string,
     readonly status: number,
     readonly code?: string,
-    readonly details?: { field: string; message: string }[]
+    readonly details?: { field: string; message: string }[],
+    /** Set when sign-in must choose between the roles this account holds. */
+    readonly roles?: string[]
   ) {
     super(message);
   }
@@ -94,7 +99,8 @@ export async function api<T = unknown>(
       payload?.message ?? `Request failed with status ${response.status}.`,
       response.status,
       payload?.error,
-      payload?.details
+      payload?.details,
+      payload?.roles
     );
   }
 

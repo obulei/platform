@@ -20,6 +20,7 @@ const ALLOWED_ENTITIES = [
   'appointment',
   'admission',
   'note',
+  'clinical_report',
   'prescription',
   'medicine',
   'lab_order',

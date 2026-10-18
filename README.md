@@ -1,7 +1,8 @@
 # Hospital Management System
 
 A role-based hospital system for day-to-day clinic operation: patient registry, appointments,
-inpatient wards and beds, pharmacy, laboratory and billing — with an append-only audit trail.
+inpatient wards and beds, pharmacy, laboratory, billing and signed clinical reports — with an
+append-only audit trail.
 
 Built for real use rather than a demo: the database, not the UI, is the authority on the rules that
 matter (who is double-booked, which bed is taken, how much stock and money is left).
@@ -13,7 +14,7 @@ matter (who is double-booked, which bed is taken, how much stock and money is le
 | API | Node 20+, Fastify 5, Zod validation, `@fastify/jwt` |
 | Database | Postgres 15, Drizzle ORM + drizzle-kit, `postgres.js` driver |
 | Client | React 18, Vite 5, react-router 6, plain CSS design system |
-| Auth | `crypto.scrypt` password hashes, 12-hour JWTs, 7 roles |
+| Auth | `crypto.scrypt` password hashes, 12-hour JWTs, 7 roles, several grants per person |
 
 Monorepo with npm workspaces: `server/` and `client/`. Drizzle is installed at the workspace root so
 `drizzle-kit` and `drizzle-orm` resolve to the same copy.
@@ -48,6 +49,9 @@ npm run dev                                   # API :8080, client :5173
 Other scripts: `npm run typecheck`, `npm run build`, `npm run db:generate`
 (after editing `server/src/db/schema/`).
 
+Every data-entry form — where its fields live and how far a change reaches — is
+mapped in [FORMS.md](FORMS.md).
+
 ### Database volume
 
 `docker-compose.yml` fixes the project name to `hms` and marks the `hms_pgdata`
@@ -55,32 +59,66 @@ volume `external`, so `docker compose down` cannot delete clinic data. On a
 fresh machine create the volume first (`docker volume create hms_pgdata`) or
 drop those lines to let Compose manage its own.
 
-### Demo accounts
+### Seeded logins
 
-Seeded with password `Clinic#2026` for every account:
+There is no shared or default password anywhere in this repository. The seed
+creates exactly one account that can sign in — `admin@clinic.test` — and its
+password is either `SEED_ADMIN_PASSWORD` from `.env` or a generated one printed
+once in the seed's final output. Copy it from that output; it is not stored
+anywhere else.
 
-`admin@clinic.test` · `reception@clinic.test` · `doctor@clinic.test` · `pediatrics@clinic.test` ·
-`surgery@clinic.test` · `nurse@clinic.test` · `pharmacy@clinic.test` · `lab@clinic.test` ·
-`billing@clinic.test`
+The other eight staff rows (reception, three doctors, nurse, pharmacist, lab
+technician, billing clerk) exist only so the seeded appointments, notes, results
+and prescriptions have real authors. They are inserted inactive, hashed over
+random bytes that are immediately discarded, so no password can open them. To let
+one of them work for real, activate it on the Staff screen, tick the roles it
+should hold, and set a password with `POST /api/staff/:id/reset-password` — all
+administrator-only, all audited.
 
-The seed is idempotent — it stops if an administrator already exists. Pass `--force` to re-run
-against a populated database.
+The seed stops when the database holds any staff at all. `--force` re-runs it
+against a populated database and adds a second cohort.
 
 ## Roles
 
+Roles are **grants**, not a column on the person. `staff_roles` holds one row per
+(staff member, role) and an administrator ticks several of them on the Staff
+screen, so a nurse who covers the desk at night can hold `nurse` and `reception`.
+`staff.role` no longer exists — a grant is the only source of authorisation truth.
+
 | Role | Can do |
 | --- | --- |
-| admin | Everything, including staff accounts, ward/bed setup and the audit trail |
+| admin | Everything, including staff accounts, role grants, ward/bed setup and the audit trail |
 | reception | Register/edit patients, book appointments, admit, raise and settle bills |
-| doctor | Clinical notes, vitals, prescriptions, lab orders, results review |
+| doctor | Clinical notes, vitals, prescriptions, lab orders, results review, sign clinical reports |
 | nurse | Vitals, notes, admissions/transfers/discharges, bed status |
 | pharmacist | Stock, adjustments, dispensing |
 | lab_technician | Collect specimens, enter results, test catalogue |
 | billing | Invoices, payments, voids |
 
+A session runs as **one** of those grants. At sign-in, an account holding several
+roles is asked which one to work as — the dropdown only ever lists that person's
+own grants, never the other six; an account with a single role goes straight in.
+The sidebar can switch the active role afterwards (`POST /api/auth/switch-role`,
+re-signed token, audited) without signing out. Revoking a grant ends any session
+using it on the next request, because every request re-reads the staff row and
+its grants.
+
 Reads of operational data are open to any signed-in role; writes and clinical free-text are
 restricted per route. The client mirrors the server's rules — a screen hidden in the sidebar is also
-blocked by route, and the API rejects the request regardless.
+blocked by route, and the API rejects the request regardless. Client checks use `user.role` (the
+active one), never `user.roles`.
+
+## Clinical reports
+
+A doctor (or an administrator) signs a report per encounter: `clinical_reports`
+holds the title, findings, diagnosis, plan and advice, attached to **one**
+appointment or one admission. `GET /api/reports/:id` assembles the printable
+document — the patient, that encounter, its last ten observation sets,
+countersigned lab results and the prescriptions written for it — so the printed
+page and the database can never disagree. Only the author, or an administrator,
+may amend it; the author on the document never changes. The client prints it with
+the browser's own print dialog (`@media print` keeps only `.report-doc`), which
+also saves it as PDF.
 
 ## Where the rules live
 
@@ -117,19 +155,27 @@ server/src/
   db/seed.ts        demo clinic
   lib/              auth, RBAC, password, audit, errors, money serialisation
   modules/          auth, staff, patients, appointments, inpatient, pharmacy,
-                    lab, billing, dashboard, audit
+                    lab, billing, reports, dashboard, audit
 client/src/
   api.ts            fetch wrapper: bearer token, ApiError, 401 → sign-in
-  auth.tsx          session context + can(user, roles)
+  auth.tsx          session context, active-role switching, can(user, roles)
+  roles.ts          the seven role names, labels and badge tones in one place
   layout.tsx        role-filtered sidebar and route visibility rule
   components.tsx    shared form/table/badge/modal primitives
+  reports.tsx       report form, printable document and list (used by two pages)
   pages/            one screen per area
 ```
 
 ## Before going live
 
 1. Set `JWT_SECRET` to a long random value and keep `.env` out of version control.
-2. Create real staff accounts and remove or disable the seeded demo logins.
+2. Sign in as the seeded administrator, change that password (`POST /api/auth/change-password`),
+   then create the clinic's real staff accounts from the Staff screen. The seeded author rows
+   cannot sign in and need no cleanup — delete them if you want the demo history gone.
+
+One consequence of that choice: `/api/staff/bookable` only lists active clinicians, so on a
+freshly seeded database the appointment and admission pickers are empty until you activate a
+doctor or nurse on the Staff screen.
 3. Put the API behind TLS and set `APP_ORIGIN` to the real client origin.
 4. Replace the hard-coded per-day bed tariffs in `server/src/modules/billing.routes.ts`
    (`ICU_DAILY_TARIFF`, `GENERAL_DAILY_TARIFF`) with a tariff table — ICU and coronary beds are

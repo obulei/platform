@@ -9,6 +9,7 @@ import { PatientsPage } from './pages/PatientsPage.js';
 import { PatientDetailPage } from './pages/PatientDetailPage.js';
 import { AppointmentsPage } from './pages/AppointmentsPage.js';
 import { WardsPage } from './pages/WardsPage.js';
+import { ReportsPage } from './pages/ReportsPage.js';
 import { PharmacyPage } from './pages/PharmacyPage.js';
 import { LabPage } from './pages/LabPage.js';
 import { BillingPage } from './pages/BillingPage.js';
@@ -35,6 +36,7 @@ export function App() {
         <Route path="/patients/:patientId" element={<PatientDetailPage />} />
         <Route path="/appointments" element={<AppointmentsPage />} />
         <Route path="/wards" element={<WardsPage />} />
+        <Route path="/reports" element={<Guard path="/reports"><ReportsPage /></Guard>} />
         <Route path="/pharmacy" element={<Guard path="/pharmacy"><PharmacyPage /></Guard>} />
         <Route path="/lab" element={<Guard path="/lab"><LabPage /></Guard>} />
         <Route path="/billing" element={<Guard path="/billing"><BillingPage /></Guard>} />

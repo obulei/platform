@@ -27,6 +27,7 @@ import {
   toDateInputValue,
   timeRangeOptions
 } from '../utils.js';
+import { ReportDocumentModal, ReportFormModal, ReportsTable, type ReportIndexRow } from '../reports.js';
 
 type PatientStatus = 'active' | 'inactive' | 'deceased';
 type Gender = 'male' | 'female' | 'other';
@@ -119,7 +120,7 @@ interface VitalsRecord {
 interface BookableClinician {
   id: string;
   fullName: string;
-  role: string;
+  roles: string[];
   specialty: string | null;
   department: string | null;
   consultationFee: number;
@@ -138,6 +139,7 @@ type TabId =
   | 'appointments'
   | 'admissions'
   | 'notes'
+  | 'reports'
   | 'vitals'
   | 'prescriptions'
   | 'labOrders'
@@ -248,6 +250,14 @@ export function PatientDetailPage() {
   const [vitalsLoading, setVitalsLoading] = useState(false);
   const [vitalsError, setVitalsError] = useState<unknown>(null);
 
+  const [reports, setReports] = useState<ReportIndexRow[] | null>(null);
+  const [reportsLoading, setReportsLoading] = useState(false);
+  const [reportsError, setReportsError] = useState<unknown>(null);
+  const [reportForm, setReportForm] = useState<{ encounter?: { kind: 'appointment' | 'admission'; value: string } } | null>(
+    null
+  );
+  const [openReportId, setOpenReportId] = useState<string | null>(null);
+
   const [editOpen, setEditOpen] = useState(false);
   const [bookingOpen, setBookingOpen] = useState(false);
   const [billBusy, setBillBusy] = useState(false);
@@ -300,6 +310,27 @@ export function PatientDetailPage() {
     }
   }, [tab, vitals, vitalsLoading, vitalsError, refreshVitals]);
 
+  // Same lazy pattern: reports live on their own clinical-role route.
+  const refreshReports = useCallback(async () => {
+    if (!patientId) return;
+    setReportsLoading(true);
+    setReportsError(null);
+    try {
+      setReports(await api<ReportIndexRow[]>('/api/reports', { query: { patientId, limit: 100 } }));
+    } catch (caught) {
+      setReports(null);
+      setReportsError(caught);
+    } finally {
+      setReportsLoading(false);
+    }
+  }, [patientId]);
+
+  useEffect(() => {
+    if (tab === 'reports' && reports === null && !reportsLoading && !isForbidden(reportsError)) {
+      void refreshReports();
+    }
+  }, [tab, reports, reportsLoading, reportsError, refreshReports]);
+
   const showNotesTab = isClinical || (history?.clinicalNotes.length ?? 0) > 0;
 
   const tabs = useMemo(() => {
@@ -308,6 +339,8 @@ export function PatientDetailPage() {
       { id: 'admissions', label: 'Admissions', count: history?.admissions.length }
     ];
     if (showNotesTab) list.push({ id: 'notes', label: 'Clinical notes', count: history?.clinicalNotes.length });
+    // Only care roles may open a report body, so the tab would be a dead end for others.
+    if (isClinical) list.push({ id: 'reports', label: 'Reports', count: reports?.length });
     list.push(
       { id: 'vitals', label: 'Vitals', count: vitals?.length },
       { id: 'prescriptions', label: 'Prescriptions', count: history?.prescriptions.length },
@@ -315,11 +348,11 @@ export function PatientDetailPage() {
       { id: 'invoices', label: 'Invoices', count: history?.invoices.length }
     );
     return list;
-  }, [history, showNotesTab, vitals]);
+  }, [history, showNotesTab, isClinical, reports, vitals]);
 
   useEffect(() => {
-    if (!showNotesTab && tab === 'notes') setTab('admissions');
-  }, [showNotesTab, tab]);
+    if ((!showNotesTab && tab === 'notes') || (!isClinical && tab === 'reports')) setTab('admissions');
+  }, [showNotesTab, isClinical, tab]);
 
   if (loading && !patient) {
     return (
@@ -399,6 +432,9 @@ export function PatientDetailPage() {
           {can(user, ['reception', 'doctor', 'nurse']) ? (
             <Button onClick={() => setBookingOpen(true)}>New appointment</Button>
           ) : null}
+          {can(user, ['doctor']) ? (
+            <Button onClick={() => setReportForm({})}>Write report</Button>
+          ) : null}
           {can(user, ['billing', 'reception']) ? (
             <Button
               variant="primary"
@@ -444,7 +480,9 @@ export function PatientDetailPage() {
                   <AdmissionsTab
                     rows={history.admissions}
                     canNote={isClinical}
+                    canReport={can(user, ['doctor'])}
                     selectedAdmissionId={admissionForNotes?.id ?? null}
+                    onReport={(admissionId) => setReportForm({ encounter: { kind: 'admission', value: admissionId } })}
                     onPosted={() => {
                       setVitals(null);
                       void loadRecord();
@@ -452,6 +490,15 @@ export function PatientDetailPage() {
                   />
                 )}
                 {tab === 'notes' && <NotesTimeline rows={history.clinicalNotes} />}
+                {tab === 'reports' && (
+                  <div className="stack">
+                    {reportsError ? <ErrorNote error={reportsError} onDismiss={() => setReportsError(null)} /> : null}
+                    {reportsLoading && !reports ? <Loading label="Loading reports…" /> : null}
+                    {reports && (
+                      <ReportsTable rows={reports} onOpen={(row) => setOpenReportId(row.id)} />
+                    )}
+                  </div>
+                )}
                 {tab === 'vitals' && (
                   <VitalsTab
                     rows={vitals}
@@ -574,6 +621,26 @@ export function PatientDetailPage() {
           }}
         />
       ) : null}
+      {reportForm ? (
+        <ReportFormModal
+          lockedPatientId={patient.id}
+          lockedPatientLabel={`${patient.fullName} · ${patient.mrn}`}
+          initialEncounter={reportForm.encounter}
+          onClose={() => setReportForm(null)}
+          onSaved={async () => {
+            await refreshReports();
+            setTab('reports');
+          }}
+        />
+      ) : null}
+
+      {openReportId ? (
+        <ReportDocumentModal
+          reportId={openReportId}
+          onClose={() => setOpenReportId(null)}
+          onChanged={() => void refreshReports()}
+        />
+      ) : null}
     </div>
   );
 
@@ -648,15 +715,20 @@ function AppointmentTimeline({
 function AdmissionsTab({
   rows,
   canNote,
+  canReport,
   selectedAdmissionId,
+  onReport,
   onPosted
 }: {
   rows: PatientHistory['admissions'];
   canNote: boolean;
+  canReport: boolean;
   selectedAdmissionId: string | null;
+  onReport: (admissionId: string) => void;
   onPosted: () => void;
 }) {
   const [admissionId, setAdmissionId] = useState(selectedAdmissionId ?? '');
+  const [reportAdmissionId, setReportAdmissionId] = useState(selectedAdmissionId ?? '');
   const [type, setType] = useState<NoteType>('progress');
   const [content, setContent] = useState('');
   const [busy, setBusy] = useState(false);
@@ -664,7 +736,8 @@ function AdmissionsTab({
 
   useEffect(() => {
     if (!admissionId && selectedAdmissionId) setAdmissionId(selectedAdmissionId);
-  }, [admissionId, selectedAdmissionId]);
+    if (!reportAdmissionId && selectedAdmissionId) setReportAdmissionId(selectedAdmissionId);
+  }, [admissionId, reportAdmissionId, selectedAdmissionId]);
 
   // The only note-writing endpoint is POST /api/admissions/:id/notes, so a
   // clinical note always belongs to an admission — outpatients have none.
@@ -765,6 +838,31 @@ function AdmissionsTab({
               </Button>
             </div>
           </form>
+        </Card>
+      ) : null}
+
+      {rows.length > 0 && canReport ? (
+        <Card
+          title="Signed clinical report"
+          subtitle="The report prints with this stay's observations, verified lab results and prescriptions."
+        >
+          <div className="form-grid">
+            <Field label="Admission">
+              <Select value={reportAdmissionId} onChange={(event) => setReportAdmissionId(event.target.value)}>
+                {rows.map((row) => (
+                  <option key={row.id} value={row.id}>
+                    {(row.wardName ?? 'Ward') + ' · ' + formatDateTime(row.admittedAt)}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          </div>
+          <div className="row">
+            <span className="spacer" />
+            <Button variant="primary" disabled={!reportAdmissionId} onClick={() => onReport(reportAdmissionId)}>
+              Write report
+            </Button>
+          </div>
         </Card>
       ) : null}
 

@@ -5,6 +5,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   smallint,
   text,
   timestamp,
@@ -52,7 +53,6 @@ export const staff = pgTable(
     id: id(),
     fullName: text('full_name').notNull(),
     email: text('email').notNull(),
-    role: staffRole('role').notNull(),
     passwordHash: text('password_hash').notNull(),
     phone: text('phone'),
     department: text('department'),
@@ -63,10 +63,25 @@ export const staff = pgTable(
     createdAt: createdAt(),
     updatedAt: updatedAt()
   },
-  (t) => [
-    uniqueIndex('staff_email_key').on(sql`lower(${t.email})`),
-    index('staff_role_idx').on(t.role)
-  ]
+  (t) => [uniqueIndex('staff_email_key').on(sql`lower(${t.email})`)]
+);
+
+/**
+ * Role grants. A person can hold several roles; a session activates one of
+ * them. This table is the only source of authorisation truth — `staff.role`
+ * was dropped so a stale column can never disagree with a grant.
+ */
+export const staffRoles = pgTable(
+  'staff_roles',
+  {
+    staffId: uuid('staff_id')
+      .notNull()
+      .references(() => staff.id, { onDelete: 'cascade' }),
+    role: staffRole('role').notNull(),
+    grantedAt: createdAt(),
+    grantedBy: uuid('granted_by').references(() => staff.id, { onDelete: 'set null' })
+  },
+  (t) => [primaryKey({ columns: [t.staffId, t.role] }), index('staff_roles_role_idx').on(t.role)]
 );
 
 export const patients = pgTable(
@@ -219,6 +234,38 @@ export const clinicalNotes = pgTable(
   (t) => [
     index('clinical_notes_patient_idx').on(t.patientId, t.createdAt),
     index('clinical_notes_admission_idx').on(t.admissionId)
+  ]
+);
+
+/**
+ * Signed clinical report: the doctor's answer to an encounter in one printable
+ * document. Attached to an outpatient appointment or an admission, or free
+ * standing on the patient record.
+ */
+export const clinicalReports = pgTable(
+  'clinical_reports',
+  {
+    id: id(),
+    patientId: uuid('patient_id')
+      .notNull()
+      .references(() => patients.id, { onDelete: 'restrict' }),
+    appointmentId: uuid('appointment_id').references(() => appointments.id, { onDelete: 'set null' }),
+    admissionId: uuid('admission_id').references(() => admissions.id, { onDelete: 'set null' }),
+    authorId: uuid('author_id')
+      .notNull()
+      .references(() => staff.id, { onDelete: 'restrict' }),
+    title: text('title').notNull(),
+    findings: text('findings').notNull(),
+    diagnosis: text('diagnosis').notNull(),
+    plan: text('plan'),
+    advice: text('advice'),
+    createdAt: createdAt(),
+    updatedAt: updatedAt()
+  },
+  (t) => [
+    index('clinical_reports_patient_idx').on(t.patientId, t.createdAt),
+    index('clinical_reports_appointment_idx').on(t.appointmentId),
+    index('clinical_reports_admission_idx').on(t.admissionId)
   ]
 );
 

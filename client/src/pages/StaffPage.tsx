@@ -16,6 +16,7 @@ import {
   Table
 } from '../components.js';
 import type { Column } from '../components.js';
+import { ROLES, ROLE_LABEL, ROLE_TONE, sortRoles, type Role } from '../roles.js';
 import { formatDateTime, formatMoney } from '../utils.js';
 
 /* ------------------------------------------------------------------ types
@@ -25,7 +26,8 @@ interface StaffMember {
   id: string;
   fullName: string;
   email: string;
-  role: string;
+  /** Every role this person has been granted; they pick one at sign-in. */
+  roles: string[];
   phone: string | null;
   department: string | null;
   specialty: string | null;
@@ -35,35 +37,12 @@ interface StaffMember {
   createdAt: string;
 }
 
-const ROLES = ['admin', 'reception', 'doctor', 'nurse', 'pharmacist', 'lab_technician', 'billing'] as const;
-type Role = (typeof ROLES)[number];
-
-const ROLE_LABEL: Record<string, string> = {
-  admin: 'Administrator',
-  reception: 'Reception',
-  doctor: 'Doctor',
-  nurse: 'Nurse',
-  pharmacist: 'Pharmacist',
-  lab_technician: 'Lab technician',
-  billing: 'Billing clerk'
-};
-
-const ROLE_TONE: Record<string, 'neutral' | 'info' | 'success' | 'warning' | 'danger' | 'clinical'> = {
-  admin: 'clinical',
-  doctor: 'info',
-  nurse: 'success',
-  pharmacist: 'warning',
-  lab_technician: 'info',
-  reception: 'neutral',
-  billing: 'neutral'
-};
-
 const MIN_PASSWORD = 10;
 
 interface ProfileDraft {
   fullName: string;
   email: string;
-  role: Role;
+  roles: Role[];
   phone: string;
   department: string;
   specialty: string;
@@ -73,7 +52,7 @@ interface ProfileDraft {
 const EMPTY_DRAFT: ProfileDraft = {
   fullName: '',
   email: '',
-  role: 'doctor',
+  roles: ['doctor'],
   phone: '',
   department: '',
   specialty: '',
@@ -85,12 +64,18 @@ function blankToNull(value: string): string | null {
   return trimmed ? trimmed : null;
 }
 
+/** Drops anything the client does not know about so the checkboxes always match the server enum. */
+function grantedRoles(roles: string[]): Role[] {
+  const known = roles.filter((role) => (ROLES as readonly string[]).includes(role)) as Role[];
+  return sortRoles<Role>(known.length ? known : ['reception']);
+}
+
 /** Body for POST /api/staff and PATCH /api/staff/:id — the server accepts the same profile shape. */
 function profileBody(draft: ProfileDraft, isActive: boolean) {
   return {
     fullName: draft.fullName.trim(),
     email: draft.email.trim(),
-    role: draft.role,
+    roles: sortRoles(draft.roles),
     phone: blankToNull(draft.phone),
     department: blankToNull(draft.department),
     specialty: blankToNull(draft.specialty),
@@ -102,13 +87,27 @@ function profileBody(draft: ProfileDraft, isActive: boolean) {
 function validateProfile(draft: ProfileDraft): string | null {
   if (draft.fullName.trim().length < 2) return 'Full name needs at least 2 characters.';
   if (!/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(draft.email.trim())) return 'Enter a valid work email address.';
-  if (!ROLES.includes(draft.role)) return 'Pick one of the seven system roles.';
+  if (draft.roles.length === 0) return 'Tick at least one role, or this account could never sign in.';
   const fee = Number(draft.consultationFee);
   if (!Number.isFinite(fee) || fee < 0 || fee > 1_000_000) return 'Consultation fee must be between 0 and 1,000,000.';
   return null;
 }
 
 /* ------------------------------------------------------------- field grid */
+
+function RoleBadges({ roles }: { roles: string[] }) {
+  const list = sortRoles(roles);
+  if (!list.length) return <span className="subtle">none granted</span>;
+  return (
+    <span className="role-badges">
+      {list.map((role) => (
+        <Badge key={role} tone={ROLE_TONE[role] ?? 'neutral'}>
+          {ROLE_LABEL[role] ?? role}
+        </Badge>
+      ))}
+    </span>
+  );
+}
 
 function ProfileFields({
   draft,
@@ -138,19 +137,34 @@ function ProfileFields({
           placeholder="name@clinic.test"
         />
       </Field>
-      <Field label="Role" required hint="Controls which modules this account can reach.">
-        <Select
-          value={draft.role}
-          disabled={disabled}
-          onChange={(event) => onChange({ role: event.target.value as Role })}
-        >
+      <fieldset className="role-set form-span-2">
+        <legend>
+          Roles <span className="req">*</span>
+        </legend>
+        <div className="role-checks">
           {ROLES.map((role) => (
-            <option key={role} value={role}>
+            <label key={role} className="checkline">
+              <input
+                type="checkbox"
+                checked={draft.roles.includes(role)}
+                disabled={disabled}
+                onChange={(event) =>
+                  onChange({
+                    roles: event.target.checked
+                      ? sortRoles([...draft.roles, role])
+                      : draft.roles.filter((held) => held !== role)
+                  })
+                }
+              />
               {ROLE_LABEL[role]}
-            </option>
+            </label>
           ))}
-        </Select>
-      </Field>
+        </div>
+        <p className="role-hint">
+          Tick every module this person should reach. They choose one of these roles at sign-in and work as that role
+          until they switch — several roles never combine into one session.
+        </p>
+      </fieldset>
       <Field label="Phone">
         <Input value={draft.phone} disabled={disabled} onChange={(event) => onChange({ phone: event.target.value })} />
       </Field>
@@ -272,7 +286,7 @@ function EditStaffModal({
   const [draft, setDraft] = useState<ProfileDraft>({
     fullName: member.fullName,
     email: member.email,
-    role: (ROLES as readonly string[]).includes(member.role) ? (member.role as Role) : 'reception',
+    roles: grantedRoles(member.roles),
     phone: member.phone ?? '',
     department: member.department ?? '',
     specialty: member.specialty ?? '',
@@ -350,8 +364,8 @@ function EditStaffModal({
       title={`Edit ${member.fullName}`}
       subtitle={
         <>
-          <Badge tone={ROLE_TONE[member.role] ?? 'neutral'}>{ROLE_LABEL[member.role] ?? member.role}</Badge>{' '}
-          <span className="subtle">Signed in as {member.email}</span>
+          <RoleBadges roles={member.roles} />{' '}
+          <span className="subtle">Signs in as {member.email}</span>
           {isSelf && <span className="subtle"> · this is your own account</span>}
         </>
       }
@@ -498,9 +512,10 @@ export function StaffPage() {
     },
     { key: 'email', header: 'Email', render: (row) => <span className="muted">{row.email}</span> },
     {
-      key: 'role',
-      header: 'Role',
-      render: (row) => <Badge tone={ROLE_TONE[row.role] ?? 'neutral'}>{ROLE_LABEL[row.role] ?? row.role}</Badge>
+      key: 'roles',
+      header: 'Roles',
+      render: (row) => <RoleBadges roles={row.roles} />,
+      width: '20%'
     },
     { key: 'department', header: 'Department', render: (row) => row.department ?? <span className="subtle">—</span> },
     { key: 'specialty', header: 'Specialty', render: (row) => row.specialty ?? <span className="subtle">—</span> },

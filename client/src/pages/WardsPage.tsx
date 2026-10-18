@@ -126,7 +126,7 @@ interface PatientHit {
 interface BookableStaff {
   id: string;
   fullName: string;
-  role: string;
+  roles: string[];
   specialty: string | null;
   department: string | null;
 }

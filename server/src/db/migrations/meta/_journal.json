@@ -8,6 +8,13 @@
       "when": 1791989094188,
       "tag": "0000_colossal_puma",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1792317750866,
+      "tag": "0001_heavy_banshee",
+      "breakpoints": true
     }
   ]
 }

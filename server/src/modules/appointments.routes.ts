@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify';
-import { and, asc, count, eq, gte, isNull, lt, or, sql } from 'drizzle-orm';
+import { and, asc, count, eq, gte, inArray, isNull, lt, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db/client.js';
-import { appointments, patients, staff } from '../db/schema/index.js';
+import { appointments, patients, staff, staffRoles } from '../db/schema/index.js';
 import type { appointmentStatus } from '../db/schema/enums.js';
 import { authenticate, ROLES } from '../lib/auth.js';
 import { audit } from '../lib/audit.js';
@@ -132,7 +132,17 @@ export async function appointmentRoutes(app: FastifyInstance) {
         and(
           eq(staff.isActive, true),
           query.staffId ? eq(staff.id, query.staffId) : undefined,
-          query.staffId ? undefined : or(eq(staff.role, ROLES.doctor), eq(staff.role, ROLES.nurse))
+          // Filtered by subquery, not a join: joining staff_roles would multiply
+          // the appointment rows this query counts.
+          query.staffId
+            ? undefined
+            : inArray(
+                staff.id,
+                db
+                  .select({ id: staffRoles.staffId })
+                  .from(staffRoles)
+                  .where(inArray(staffRoles.role, [ROLES.doctor, ROLES.nurse]))
+              )
         )
       )
       .groupBy(staff.id);
@@ -162,7 +172,7 @@ export async function appointmentRoutes(app: FastifyInstance) {
     if (!patient) throw badRequest('Select a valid patient.');
 
     const [clinician] = await db
-      .select({ id: staff.id, role: staff.role, isActive: staff.isActive, fee: staff.consultationFee })
+      .select({ id: staff.id, isActive: staff.isActive, fee: staff.consultationFee })
       .from(staff)
       .where(eq(staff.id, body.staffId))
       .limit(1);

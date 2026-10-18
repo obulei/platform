@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
 import { db, pgClient } from './client.js';
 import {
@@ -16,29 +17,47 @@ import {
   prescriptions,
   prescriptionItems,
   staff,
+  staffRoles,
   stockMovements,
   vitalsRecords,
   wards
 } from './schema/index.js';
-import { hashPassword } from '../lib/password.js';
+import type { Role } from '../lib/auth.js';
+import { hashPassword, MIN_PASSWORD_LENGTH } from '../lib/password.js';
 
 /**
  * Seeds a clinic with enough realistic data to exercise every screen.
- * Idempotent: it stops if an administrator already exists, unless --force.
+ *
+ * There is no default password. Only the administrator row is a usable login:
+ * its password comes from `SEED_ADMIN_PASSWORD`, or is generated here and
+ * printed once. Every other staff row exists so seeded appointments, notes and
+ * results have real authors — those are inserted inactive, with a hash over
+ * discarded random bytes, so nothing can be guessed or sign-in-tested against
+ * them. An administrator activates one later from the staff screen and gives it
+ * a password through the reset action.
+ *
+ * Idempotent: it stops when the database already holds staff, unless --force.
  */
 
-const DEMO_PASSWORD = 'Clinic#2026';
+const ADMIN_EMAIL = 'admin@clinic.test';
 
-const STAFF_SEED = [
-  { fullName: 'Amara Okonkwo', email: 'admin@clinic.test', role: 'admin' as const, department: 'Administration' },
-  { fullName: 'Grace Mbeki', email: 'reception@clinic.test', role: 'reception' as const, department: 'Front Desk' },
-  { fullName: 'Dr. Samuel Adeyemi', email: 'doctor@clinic.test', role: 'doctor' as const, department: 'Internal Medicine', specialty: 'Internal Medicine', fee: '25.00' },
-  { fullName: 'Dr. Leila Haddad', email: 'pediatrics@clinic.test', role: 'doctor' as const, department: 'Pediatrics', specialty: 'Pediatrics', fee: '30.00' },
-  { fullName: 'Dr. Kwame Mensah', email: 'surgery@clinic.test', role: 'doctor' as const, department: 'Surgery', specialty: 'General Surgery', fee: '45.00' },
-  { fullName: 'Nurse Fatima Bello', email: 'nurse@clinic.test', role: 'nurse' as const, department: 'General Ward' },
-  { fullName: 'Pharmacist Tunde Ayodele', email: 'pharmacy@clinic.test', role: 'pharmacist' as const, department: 'Pharmacy' },
-  { fullName: 'Lab Tech Joy Wanjiru', email: 'lab@clinic.test', role: 'lab_technician' as const, department: 'Laboratory' },
-  { fullName: 'Biller Dennis Mwangi', email: 'billing@clinic.test', role: 'billing' as const, department: 'Accounts' }
+const STAFF_SEED: {
+  fullName: string;
+  email: string;
+  roles: Role[];
+  department?: string;
+  specialty?: string;
+  fee?: string;
+}[] = [
+  { fullName: 'Amara Okonkwo', email: ADMIN_EMAIL, roles: ['admin'], department: 'Administration' },
+  { fullName: 'Grace Mbeki', email: 'reception@clinic.test', roles: ['reception'], department: 'Front Desk' },
+  { fullName: 'Dr. Samuel Adeyemi', email: 'doctor@clinic.test', roles: ['doctor'], department: 'Internal Medicine', specialty: 'Internal Medicine', fee: '25.00' },
+  { fullName: 'Dr. Leila Haddad', email: 'pediatrics@clinic.test', roles: ['doctor'], department: 'Pediatrics', specialty: 'Pediatrics', fee: '30.00' },
+  { fullName: 'Dr. Kwame Mensah', email: 'surgery@clinic.test', roles: ['doctor'], department: 'Surgery', specialty: 'General Surgery', fee: '45.00' },
+  { fullName: 'Nurse Fatima Bello', email: 'nurse@clinic.test', roles: ['nurse'], department: 'General Ward' },
+  { fullName: 'Pharmacist Tunde Ayodele', email: 'pharmacy@clinic.test', roles: ['pharmacist'], department: 'Pharmacy' },
+  { fullName: 'Lab Tech Joy Wanjiru', email: 'lab@clinic.test', roles: ['lab_technician'], department: 'Laboratory' },
+  { fullName: 'Biller Dennis Mwangi', email: 'billing@clinic.test', roles: ['billing'], department: 'Accounts' }
 ];
 
 const WARDS = [
@@ -91,47 +110,66 @@ function startOfDay(date: Date, addDays = 0): Date {
   return copy;
 }
 
+/**
+ * base64url draws uniformly from its alphabet, so no rejection loop is needed to
+ * keep the password unbiased. The suffix only guarantees the character classes a
+ * person expects to type.
+ */
+function bootstrapPassword(): string {
+  const fromEnv = process.env.SEED_ADMIN_PASSWORD;
+  if (fromEnv === undefined || fromEnv === '') return `${randomBytes(18).toString('base64url')}#A9`;
+  if (fromEnv.length < MIN_PASSWORD_LENGTH) {
+    throw new Error(`SEED_ADMIN_PASSWORD must be at least ${MIN_PASSWORD_LENGTH} characters, or unset to generate one.`);
+  }
+  return fromEnv;
+}
+
 async function seed() {
   const force = process.argv.includes('--force');
 
-  const [existing] = await db
-    .select({ id: staff.id })
-    .from(staff)
-    .where(eq(staff.email, STAFF_SEED[0].email))
-    .limit(1);
+  const [populated] = await db.select({ total: sql<number>`count(*)::int` }).from(staff);
 
-  if (existing && !force) {
-    console.log('Seed skipped: staff already present. Re-run with --force to add a second cohort.');
+  if (populated.total > 0 && !force) {
+    console.log(
+      `Seed skipped: ${populated.total} staff account(s) already exist. Re-run with --force to add a second cohort.`
+    );
     await pgClient.end();
     return;
   }
 
-  console.log(
-    'Seeding staff. All seeded accounts share the demo password defined at the top of this file.'
-  );
+  const adminPassword = bootstrapPassword();
+  console.log(`Seeding ${STAFF_SEED.length} staff rows. Only ${ADMIN_EMAIL} will be able to sign in.`);
 
-  const passwordHash = await hashPassword(DEMO_PASSWORD);
   const staffRows: (typeof staff.$inferSelect)[] = [];
   for (const record of STAFF_SEED) {
+    const isAdmin = record.email === ADMIN_EMAIL;
     const [row] = await db
       .insert(staff)
       .values({
         fullName: record.fullName,
         email: record.email,
-        role: record.role,
-        passwordHash,
+        // Author-only rows are hashed over bytes that are never kept, so no
+        // password — including any that used to live in this file — verifies
+        // against them, and they are inserted inactive on top of that.
+        passwordHash: await hashPassword(isAdmin ? adminPassword : randomBytes(32).toString('base64url')),
+        isActive: isAdmin,
         department: record.department ?? null,
-        specialty: 'specialty' in record ? (record.specialty ?? null) : null,
-        consultationFee: 'fee' in record ? record.fee : '0.00'
+        specialty: record.specialty ?? null,
+        consultationFee: record.fee ?? '0.00'
       })
       .returning();
+    await db.insert(staffRoles).values(record.roles.map((role) => ({ staffId: row.id, role })));
     staffRows.push(row);
   }
 
-  const byRole = (role: string) => staffRows.find((row) => row.role === role)!;
+  const rolesByEmail = new Map(STAFF_SEED.map((record) => [record.email, record.roles]));
+  /** Seed authors are keyed by their grants, because staff carries no role column. */
+  const withRole = (role: Role) =>
+    staffRows.filter((row) => rolesByEmail.get(row.email)?.includes(role));
+  const byRole = (role: Role) => withRole(role)[0]!;
   const admin = byRole('admin');
   const reception = byRole('reception');
-  const doctors = staffRows.filter((row) => row.role === 'doctor');
+  const doctors = withRole('doctor');
   const nurse = byRole('nurse');
   const pharmacist = byRole('pharmacist');
   const labTech = byRole('lab_technician');
@@ -573,7 +611,17 @@ async function seed() {
   console.log(
     `  staff ${STAFF_SEED.length}  patients ${counts[0][0].c}  appointments ${counts[1][0].c}  beds ${counts[2][0].c}  medicines ${counts[3][0].c}`
   );
-  console.log(`  Sign in with any seeded email and the demo password from this file's header.`);
+  console.log(
+    `  Sign in as ${ADMIN_EMAIL}. The other ${STAFF_SEED.length - 1} seeded staff rows are record`
+  );
+  console.log('  authors only: inactive, with password hashes that were never written down.');
+  if (process.env.SEED_ADMIN_PASSWORD) {
+    console.log('  Administrator password: the SEED_ADMIN_PASSWORD you supplied (not echoed here).');
+  } else {
+    // Shown once — nothing else keeps it, so losing it means seeding a clean
+    // database again or editing the staff table directly.
+    console.log(`  Administrator password: ${adminPassword}`);
+  }
 
   await pgClient.end();
 }

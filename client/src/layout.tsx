@@ -1,7 +1,10 @@
 import type { ReactNode } from 'react';
-import { NavLink, useLocation } from 'react-router-dom';
+import { useState } from 'react';
+import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { can, useAuth } from './auth.js';
 import type { SessionUser } from './api';
+import { CLINIC } from './branding.js';
+import { ROLE_LABEL } from './roles.js';
 import { classList } from './utils.js';
 
 interface NavItem {
@@ -34,6 +37,12 @@ const NAV: NavItem[] = [
     label: 'Wards & beds',
     roles: ['reception', 'doctor', 'nurse', 'lab_technician', 'billing', 'pharmacist'],
     icon: icon('M4 20V7a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v13M14 20V11h4a2 2 0 0 1 2 2v7M4 20h16M7 9h2m-2 4h2')
+  },
+  {
+    to: '/reports',
+    label: 'Clinical reports',
+    roles: ['doctor', 'nurse'],
+    icon: icon('M8 3h8a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Zm2 6h6m-6 4h6m-6 4h3M6 8H4m2 4H4m2 4H4')
   },
   {
     to: '/pharmacy',
@@ -84,6 +93,7 @@ const TITLES: Record<string, string> = {
   '/patients': 'Patient registry',
   '/appointments': 'Appointments',
   '/wards': 'Wards and beds',
+  '/reports': 'Clinical reports',
   '/pharmacy': 'Pharmacy',
   '/lab': 'Laboratory',
   '/billing': 'Billing',
@@ -91,18 +101,12 @@ const TITLES: Record<string, string> = {
   '/audit': 'Audit trail'
 };
 
-const ROLE_LABEL: Record<string, string> = {  admin: 'Administrator',
-  reception: 'Reception',
-  doctor: 'Doctor',
-  nurse: 'Nurse',
-  pharmacist: 'Pharmacist',
-  lab_technician: 'Lab technician',
-  billing: 'Billing clerk'
-};
-
 export function Layout({ children }: { children: ReactNode }) {
-  const { user, signOut } = useAuth();
+  const { user, signOut, switchRole } = useAuth();
   const location = useLocation();
+  const navigate = useNavigate();
+  const [switchError, setSwitchError] = useState<string | null>(null);
+  const [switching, setSwitching] = useState(false);
 
   const section = '/' + (location.pathname.split('/')[1] ?? '');
   const title = TITLES[section] ?? TITLES['/'];
@@ -110,22 +114,39 @@ export function Layout({ children }: { children: ReactNode }) {
   // An empty `roles` array means administrator-only; `can()` grants admins.
   const visible = NAV.filter((item) => !item.roles || can(user, item.roles));
 
+  const granted = user?.roles ?? [];
+
+  async function onSwitchRole(role: string) {
+    if (!user || switching || role === user.role) return;
+    setSwitching(true);
+    setSwitchError(null);
+    try {
+      await switchRole(role);
+      // The screen you are on may belong to the role you are leaving.
+      if (!navAllows(section, { ...user, role })) navigate('/', { replace: true });
+    } catch {
+      setSwitchError('Could not switch role. You are still working as before.');
+    } finally {
+      setSwitching(false);
+    }
+  }
+
   return (
     <div className="app-shell">
       <nav className="sidebar" aria-label="Main navigation">
         <div className="brand">
           <span className="brand-mark" aria-hidden="true">
-            H
+            {CLINIC.mark}
           </span>
           <span className="brand-text">
-            <strong>Kisubi Medical</strong>
-            <span>Hospital system</span>
+            <strong>{CLINIC.name}</strong>
+            <span>{CLINIC.tagline}</span>
           </span>
         </div>
 
         <span className="nav-group-label">Care</span>
         {visible
-          .filter((item) => ['/', '/patients', '/appointments', '/wards'].includes(item.to))
+          .filter((item) => ['/', '/patients', '/appointments', '/wards', '/reports'].includes(item.to))
           .map((item) => (
             <NavLink key={item.to} to={item.to} end={item.to === '/'} className={({ isActive }) => classList('nav-link', isActive && 'is-active')}>
               {item.icon}
@@ -156,8 +177,25 @@ export function Layout({ children }: { children: ReactNode }) {
         <div className="sidebar-foot">
           <div className="who">
             <strong>{user?.fullName}</strong>
-            <span>{user ? ROLE_LABEL[user.role] ?? user.role : ''}</span>
+            <span>{user ? `Acting as ${ROLE_LABEL[user.role] ?? user.role}` : ''}</span>
           </div>
+          {granted.length > 1 && (
+            <label className="role-switch">
+              <span>Switch role</span>
+              <select
+                value={user?.role ?? ''}
+                disabled={switching}
+                onChange={(event) => void onSwitchRole(event.target.value)}
+              >
+                {granted.map((role) => (
+                  <option key={role} value={role}>
+                    {ROLE_LABEL[role] ?? role}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          {switchError && <p className="foot-error">{switchError}</p>}
           <button type="button" className="sign-out" onClick={signOut}>
             Sign out
           </button>
@@ -167,7 +205,7 @@ export function Layout({ children }: { children: ReactNode }) {
       <div className="main">
         <header className="topbar">
           <div>
-            <div className="crumb">Kisubi Medical · {user?.department ?? 'General'}</div>
+            <div className="crumb">{CLINIC.name} · {user?.department ?? 'General'}</div>
             <h1>{title}</h1>
           </div>
           <div className="topbar-actions">

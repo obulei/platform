@@ -14,7 +14,8 @@ import {
   patients,
   payments,
   prescriptions,
-  staff
+  staff,
+  staffRoles
 } from '../db/schema/index.js';
 import { authenticate, ROLES } from '../lib/auth.js';
 
@@ -148,7 +149,15 @@ export async function dashboardRoutes(app: FastifyInstance) {
       db
         .select({ id: staff.id, fullName: staff.fullName, specialty: staff.specialty })
         .from(staff)
-        .where(and(eq(staff.role, ROLES.doctor), eq(staff.isActive, true)))
+        .where(
+          and(
+            eq(staff.isActive, true),
+            inArray(
+              staff.id,
+              db.select({ id: staffRoles.staffId }).from(staffRoles).where(eq(staffRoles.role, ROLES.doctor))
+            )
+          )
+        )
         .orderBy(asc(staff.fullName)),
       db
         .select({

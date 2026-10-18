@@ -1,5 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { ZodError } from 'zod';
+import type { Role } from './auth.js';
 
 interface PgError {
   code?: string;
@@ -16,7 +17,9 @@ export class HttpError extends Error {
     readonly status: number,
     readonly code: string,
     message: string,
-    readonly details?: unknown
+    readonly details?: unknown,
+    /** Extra top-level fields the client needs — e.g. the roles to choose from. */
+    readonly extra?: Record<string, unknown>
   ) {
     super(message);
   }
@@ -25,6 +28,20 @@ export class HttpError extends Error {
 export const badRequest = (message: string) => new HttpError(400, 'bad_request', message);
 export const notFound = (what = 'Record') => new HttpError(404, 'not_found', `${what} not found.`);
 export const conflict = (message: string) => new HttpError(409, 'conflict', message);
+/** A signed-in person who is allowed to know the route exists but not to act. */
+export const forbidden = (message: string) => new HttpError(403, 'forbidden', message);
+/**
+ * Sign-in succeeded, but the account holds more than one role and the request
+ * did not say which one to activate. The client draws the choice from `roles`.
+ */
+export const roleRequired = (roles: readonly Role[]) =>
+  new HttpError(
+    400,
+    'role_required',
+    'Choose the role you are signing in as.',
+    undefined,
+    { roles }
+  );
 
 const CONSTRAINT_MESSAGES: Record<string, string> = {
   appointments_no_staff_overlap:
@@ -98,7 +115,8 @@ export function registerErrorHandler(app: FastifyInstance) {
       .send({
         error: httpError.code,
         message: httpError.message,
-        ...(httpError.details ? { details: httpError.details } : {})
+        ...(httpError.details ? { details: httpError.details } : {}),
+        ...httpError.extra
       });
   });
 }

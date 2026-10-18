@@ -8,6 +8,7 @@ import {
   prescriptionItems,
   prescriptions,
   staff,
+  staffRoles,
   stockMovements,
   medicineForm,
   prescriptionStatus,
@@ -180,7 +181,9 @@ export async function pharmacyRoutes(app: FastifyInstance) {
         reference: stockMovements.reference,
         createdAt: stockMovements.createdAt,
         performedByName: staff.fullName,
-        performedByRole: staff.role
+        // An account can hold several roles, so the trail shows all of them.
+        performedByRole:
+          sql<string>`(select string_agg(sr.role::text, ', ') from staff_roles sr where sr.staff_id = ${staff.id})`
       })
       .from(stockMovements)
       .leftJoin(staff, eq(stockMovements.performedBy, staff.id))

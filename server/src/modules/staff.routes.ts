@@ -1,10 +1,9 @@
 import type { FastifyInstance } from 'fastify';
-import { and, asc, count, eq, ne, or } from 'drizzle-orm';
+import { and, asc, count, eq, inArray, ne } from 'drizzle-orm';
 import { z } from 'zod';
 import { db } from '../db/client.js';
-import { staff } from '../db/schema/index.js';
-import { staffRole } from '../db/schema/enums.js';
-import { authenticate, ROLES } from '../lib/auth.js';
+import { staff, staffRoles } from '../db/schema/index.js';
+import { ALL_ROLES, authenticate, grantedRoles, ROLES, type Role } from '../lib/auth.js';
 import { audit } from '../lib/audit.js';
 import { badRequest, notFound } from '../lib/errors.js';
 import { hashPassword, MIN_PASSWORD_LENGTH, verifyPassword } from '../lib/password.js';
@@ -12,13 +11,13 @@ import { money } from '../lib/serialize.js';
 
 type StaffRow = typeof staff.$inferSelect;
 
-const ALL_ROLES = staffRole.enumValues;
+const CLINICIAN_ROLES: Role[] = [ROLES.doctor, ROLES.nurse];
 
-const dto = (row: StaffRow) => ({
+const dto = (row: StaffRow, roles: Role[]) => ({
   id: row.id,
   fullName: row.fullName,
   email: row.email,
-  role: row.role,
+  roles,
   phone: row.phone,
   department: row.department,
   specialty: row.specialty,
@@ -28,10 +27,30 @@ const dto = (row: StaffRow) => ({
   createdAt: row.createdAt
 });
 
+/** Grants for several accounts in one query, keyed by staff id, in enum order. */
+async function grantsByStaff(ids: string[]): Promise<Map<string, Role[]>> {
+  const byId = new Map<string, Role[]>(ids.map((id) => [id, []]));
+  if (ids.length === 0) return byId;
+
+  const rows = await db
+    .select({ staffId: staffRoles.staffId, role: staffRoles.role })
+    .from(staffRoles)
+    .where(inArray(staffRoles.staffId, ids));
+
+  for (const row of rows) byId.get(row.staffId)?.push(row.role);
+  for (const roles of byId.values()) roles.sort((a, b) => ALL_ROLES.indexOf(a) - ALL_ROLES.indexOf(b));
+  return byId;
+}
+
+/** Account ids holding any of these roles, for use as a subquery filter. */
+function withRoles(roles: Role[]) {
+  return db.select({ id: staffRoles.staffId }).from(staffRoles).where(inArray(staffRoles.role, roles));
+}
+
 const profileFields = z.object({
   fullName: z.string().min(2).max(160),
   email: z.string().email().max(200),
-  role: z.enum(ALL_ROLES),
+  roles: z.array(z.enum(ALL_ROLES)).min(1, 'Assign at least one role.'),
   phone: z.string().max(40).nullish(),
   department: z.string().max(120).nullish(),
   specialty: z.string().max(120).nullish(),
@@ -42,6 +61,13 @@ const profileFields = z.object({
 const createSchema = profileFields.extend({
   password: z.string().min(MIN_PASSWORD_LENGTH, `Use at least ${MIN_PASSWORD_LENGTH} characters.`)
 });
+
+/**
+ * One grant per role, in enum order, whatever order the payload arrived in —
+ * so a response, an audit entry and the sign-in menu always read the same.
+ */
+const uniqueRoles = (roles: Role[]) =>
+  [...new Set(roles)].sort((a, b) => ALL_ROLES.indexOf(a) - ALL_ROLES.indexOf(b));
 
 export async function staffRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authenticate());
@@ -55,7 +81,7 @@ export async function staffRoutes(app: FastifyInstance) {
       .parse(request.query);
 
     const filters = [];
-    if (query.role) filters.push(eq(staff.role, query.role));
+    if (query.role) filters.push(inArray(staff.id, withRoles([query.role])));
     if (query.active) filters.push(eq(staff.isActive, query.active === 'true'));
 
     const rows = await db
@@ -64,7 +90,8 @@ export async function staffRoutes(app: FastifyInstance) {
       .where(filters.length ? and(...filters) : undefined)
       .orderBy(asc(staff.fullName));
 
-    return rows.map(dto);
+    const grants = await grantsByStaff(rows.map((row) => row.id));
+    return rows.map((row) => dto(row, grants.get(row.id) ?? []));
   });
 
   /** Clinicians available for booking, for dropdowns across the app. */
@@ -75,7 +102,6 @@ export async function staffRoutes(app: FastifyInstance) {
       .select({
         id: staff.id,
         fullName: staff.fullName,
-        role: staff.role,
         specialty: staff.specialty,
         department: staff.department,
         consultationFee: staff.consultationFee
@@ -84,18 +110,22 @@ export async function staffRoutes(app: FastifyInstance) {
       .where(
         and(
           eq(staff.isActive, true),
-          query.role
-            ? eq(staff.role, query.role)
-            : or(eq(staff.role, ROLES.doctor), eq(staff.role, ROLES.nurse))
+          inArray(staff.id, withRoles(query.role ? [query.role] : CLINICIAN_ROLES))
         )
       )
       .orderBy(asc(staff.fullName));
 
-    return rows.map((row) => ({ ...row, consultationFee: money(row.consultationFee) }));
+    const grants = await grantsByStaff(rows.map((row) => row.id));
+    return rows.map((row) => ({
+      ...row,
+      roles: grants.get(row.id) ?? [],
+      consultationFee: money(row.consultationFee)
+    }));
   });
 
   app.post('/api/staff', { preHandler: authenticate([ROLES.admin]) }, async (request) => {
     const body = createSchema.parse(request.body);
+    const roles = uniqueRoles(body.roles);
 
     const [duplicate] = await db
       .select({ id: staff.id })
@@ -104,28 +134,32 @@ export async function staffRoutes(app: FastifyInstance) {
       .limit(1);
     if (duplicate) throw badRequest('A staff account with that email already exists.');
 
-    const [row] = await db
-      .insert(staff)
-      .values({
-        fullName: body.fullName,
-        email: body.email,
-        role: body.role,
-        passwordHash: await hashPassword(body.password),
-        phone: body.phone ?? null,
-        department: body.department ?? null,
-        specialty: body.specialty ?? null,
-        consultationFee: String(body.consultationFee),
-        isActive: body.isActive
-      })
-      .returning();
+    const actorId = request.currentUser!.id;
+    const [row, grants] = await db.transaction(async (tx) => {
+      const [created] = await tx
+        .insert(staff)
+        .values({
+          fullName: body.fullName,
+          email: body.email,
+          passwordHash: await hashPassword(body.password),
+          phone: body.phone ?? null,
+          department: body.department ?? null,
+          specialty: body.specialty ?? null,
+          consultationFee: String(body.consultationFee),
+          isActive: body.isActive
+        })
+        .returning();
+      await tx.insert(staffRoles).values(roles.map((role) => ({ staffId: created.id, role, grantedBy: actorId })));
+      return [created, roles] as const;
+    });
 
     await audit(request, {
       action: 'staff.created',
       entity: 'staff',
       entityId: row.id,
-      data: { role: row.role, email: row.email }
+      data: { roles: grants, email: row.email }
     });
-    return dto(row);
+    return dto(row, grants);
   });
 
   app.patch('/api/staff/:id', { preHandler: authenticate([ROLES.admin]) }, async (request) => {
@@ -139,12 +173,22 @@ export async function staffRoutes(app: FastifyInstance) {
       throw badRequest('You cannot deactivate your own account.');
     }
 
-    // Never leave the system without a way back in.
-    if (existing.role === ROLES.admin && (body.role || body.isActive === false)) {
+    // Never leave the system without a way back in: losing the admin grant, or
+    // going inactive, is only refused when no other active administrator would
+    // remain.
+    const heldRoles = await grantedRoles(id);
+    const demotes = body.roles !== undefined && !body.roles.includes(ROLES.admin);
+    if (heldRoles.includes(ROLES.admin) && (demotes || body.isActive === false)) {
       const [{ total }] = await db
         .select({ total: count() })
         .from(staff)
-        .where(and(eq(staff.role, ROLES.admin), eq(staff.isActive, true), ne(staff.id, id)));
+        .where(
+          and(
+            eq(staff.isActive, true),
+            inArray(staff.id, withRoles([ROLES.admin])),
+            ne(staff.id, id)
+          )
+        );
       if (Number(total) === 0) throw badRequest('At least one active administrator must remain.');
     }
 
@@ -153,24 +197,37 @@ export async function staffRoutes(app: FastifyInstance) {
       if (clash) throw badRequest('That email is already in use.');
     }
 
-    const [row] = await db
-      .update(staff)
-      .set({
-        ...body,
-        consultationFee:
-          body.consultationFee === undefined ? undefined : String(body.consultationFee),
-        updatedAt: new Date()
-      })
-      .where(eq(staff.id, id))
-      .returning();
+    const { roles, ...fields } = body;
+    const grants = roles ? uniqueRoles(roles) : undefined;
+    const actorId = request.currentUser!.id;
+
+    const row = await db.transaction(async (tx) => {
+      const [updated] = await tx
+        .update(staff)
+        .set({
+          ...fields,
+          consultationFee: fields.consultationFee === undefined ? undefined : String(fields.consultationFee),
+          updatedAt: new Date()
+        })
+        .where(eq(staff.id, id))
+        .returning();
+
+      // Replacing the whole grant set is what makes a revoked role take effect
+      // as soon as the next request is resolved.
+      if (grants) {
+        await tx.delete(staffRoles).where(eq(staffRoles.staffId, id));
+        await tx.insert(staffRoles).values(grants.map((role) => ({ staffId: id, role, grantedBy: actorId })));
+      }
+      return updated;
+    });
 
     await audit(request, {
       action: 'staff.updated',
       entity: 'staff',
       entityId: id,
-      data: { fields: Object.keys(body) }
+      data: { fields: Object.keys(body), roles: grants }
     });
-    return dto(row);
+    return dto(row, grants ?? heldRoles);
   });
 
   const resetSchema = z.object({

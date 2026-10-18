@@ -112,5 +112,5 @@ echo "  client  http://localhost:$CLIENT_PORT"
 echo "  api     http://localhost:$API_PORT/api/health"
 echo "  logs    .run/api.log  .run/client.log"
 echo
-echo "Sign in with a seeded account (see README) — every demo login uses the"
-echo "password Clinic#2026 until you replace the seeded staff."
+echo "Sign in with the administrator account. On a seeded database its password was"
+echo "printed once while seeding; create staff logins from the Staff screen."
