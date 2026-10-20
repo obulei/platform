@@ -15,7 +15,7 @@
 import { randomBytes } from 'node:crypto';
 import { publicClient } from './client.js';
 import { createPlatformAdmin, findPlatformAdminByEmail } from './provision.js';
-import { MIN_PASSWORD_LENGTH } from '../lib/password.js';
+import { passwordField } from '../lib/password.js';
 
 function flag(name: string): string | undefined {
   const index = process.argv.indexOf(`--${name}`);
@@ -25,9 +25,10 @@ function flag(name: string): string | undefined {
 function password(): string {
   const fromEnv = process.env.PLATFORM_ADMIN_PASSWORD;
   if (fromEnv === undefined || fromEnv === '') return `${randomBytes(18).toString('base64url')}#A9`;
-  if (fromEnv.length < MIN_PASSWORD_LENGTH) {
+  const checked = passwordField.safeParse(fromEnv);
+  if (!checked.success) {
     throw new Error(
-      `PLATFORM_ADMIN_PASSWORD must be at least ${MIN_PASSWORD_LENGTH} characters, or unset to generate one.`
+      `PLATFORM_ADMIN_PASSWORD ${checked.error.issues[0].message} — or unset it to generate one.`
     );
   }
   return fromEnv;

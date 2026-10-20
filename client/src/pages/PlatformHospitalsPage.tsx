@@ -15,8 +15,8 @@ import {
 } from '../components.js';
 import type { Column } from '../components.js';
 import { classList } from '../utils.js';
+import { PASSWORD_HINT, passwordProblem } from '../password.js';
 
-const MIN_PASSWORD = 10;
 /** Same rule the server applies to a hospital address. */
 const SLUG = /^[a-z0-9][a-z0-9-]{1,48}[a-z0-9]$/;
 
@@ -43,8 +43,7 @@ const EMPTY_IDENTITY: IdentityDraft = {
 function validateAdministrator(draft: AdministratorDraft): string | null {
   if (draft.fullName.trim().length < 2) return 'The administrator needs a name.';
   if (!/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(draft.email.trim())) return 'Enter a valid work email address.';
-  if (draft.password.length < MIN_PASSWORD) return `Use at least ${MIN_PASSWORD} characters for the password.`;
-  return null;
+  return passwordProblem(draft.password);
 }
 
 const reason = (caught: unknown) =>
@@ -260,9 +259,8 @@ export function PlatformHospitalsPage() {
   async function submitPassword(event: FormEvent) {
     event.preventDefault();
     if (!managing || !passwordFor) return;
-    if (passwordValue.length < MIN_PASSWORD) {
-      return setManageError(`Use at least ${MIN_PASSWORD} characters.`);
-    }
+    const problem = passwordProblem(passwordValue);
+    if (problem) return setManageError(problem);
 
     setManageError(null);
     setSaving(true);
@@ -490,7 +488,7 @@ export function PlatformHospitalsPage() {
             <Field
               label="Password"
               required
-              hint={`At least ${MIN_PASSWORD} characters. It is stored hashed and never shown again, so send it to the person yourself.`}
+              hint={`${PASSWORD_HINT} It is stored hashed and never shown again, so send it to the person yourself.`}
               className="form-span-2"
             >
               <Input
@@ -645,7 +643,7 @@ export function PlatformHospitalsPage() {
                     <Field
                       label={`New password for ${person.email}`}
                       required
-                      hint={`At least ${MIN_PASSWORD} characters. Not shown again after saving.`}
+                      hint={`${PASSWORD_HINT} Not shown again after saving.`}
                     >
                       <Input
                         type="password"
@@ -688,7 +686,7 @@ export function PlatformHospitalsPage() {
                     autoComplete="off"
                   />
                 </Field>
-                <Field label="Password" required hint={`At least ${MIN_PASSWORD} characters.`}>
+                <Field label="Password" required hint={PASSWORD_HINT}>
                   <Input
                     type="password"
                     value={newAdmin.password}

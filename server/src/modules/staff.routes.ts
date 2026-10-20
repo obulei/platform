@@ -13,7 +13,7 @@ import {
 } from '../lib/auth.js';
 import { audit } from '../lib/audit.js';
 import { badRequest, notFound } from '../lib/errors.js';
-import { hashPassword, MIN_PASSWORD_LENGTH, verifyPassword } from '../lib/password.js';
+import { hashPassword, passwordField, verifyPassword } from '../lib/password.js';
 import { money } from '../lib/serialize.js';
 
 type StaffRow = typeof staff.$inferSelect;
@@ -66,7 +66,7 @@ const profileFields = z.object({
 });
 
 const createSchema = profileFields.extend({
-  password: z.string().min(MIN_PASSWORD_LENGTH, `Use at least ${MIN_PASSWORD_LENGTH} characters.`)
+  password: passwordField
 });
 
 /**
@@ -242,7 +242,7 @@ export async function staffRoutes(app: FastifyInstance) {
   });
 
   const resetSchema = z.object({
-    newPassword: z.string().min(MIN_PASSWORD_LENGTH),
+    newPassword: passwordField,
     adminPassword: z.string().min(1)
   });
 

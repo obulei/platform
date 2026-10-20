@@ -26,7 +26,7 @@ import {
   wards
 } from './schema/index.js';
 import type { Role } from '../lib/auth.js';
-import { hashPassword, MIN_PASSWORD_LENGTH } from '../lib/password.js';
+import { hashPassword, passwordField } from '../lib/password.js';
 
 /**
  * Seeds a clinic with enough realistic data to exercise every screen.
@@ -121,8 +121,9 @@ function startOfDay(date: Date, addDays = 0): Date {
 function bootstrapPassword(): string {
   const fromEnv = process.env.SEED_ADMIN_PASSWORD;
   if (fromEnv === undefined || fromEnv === '') return `${randomBytes(18).toString('base64url')}#A9`;
-  if (fromEnv.length < MIN_PASSWORD_LENGTH) {
-    throw new Error(`SEED_ADMIN_PASSWORD must be at least ${MIN_PASSWORD_LENGTH} characters, or unset to generate one.`);
+  const checked = passwordField.safeParse(fromEnv);
+  if (!checked.success) {
+    throw new Error(`SEED_ADMIN_PASSWORD ${checked.error.issues[0].message} — or unset it to generate one.`);
   }
   return fromEnv;
 }

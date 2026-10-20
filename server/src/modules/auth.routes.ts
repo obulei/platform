@@ -2,8 +2,8 @@ import type { FastifyInstance } from 'fastify';
 import { eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { staff } from '../db/schema/index.js';
-import { findFacilityByAddress } from '../db/tenant.js';
-import { DECOY_HASH, verifyPassword } from '../lib/password.js';
+import { resolveSignInAddress } from '../db/tenant.js';
+import { DECOY_HASH, passwordField, verifyPassword } from '../lib/password.js';
 import {
   ALL_ROLES,
   authenticate,
@@ -20,7 +20,7 @@ import { sessionFacility, type SessionFacility } from '../lib/branding.js';
 /**
  * Sign-in is addressed to one hospital: staff emails are unique inside a
  * facility, not across the platform, so `admin@clinic.test` can exist at two
- * clinics and the address decides which door it opens. `findFacilityByAddress`
+ * clinics and the address decides which door it opens. `resolveSignInAddress`
  * takes that address in any capitalisation, plus a hospital's display name while
  * no two hospitals share it, because the name is what staff are actually told.
  */
@@ -59,20 +59,43 @@ export async function authRoutes(app: FastifyInstance) {
   app.post('/api/auth/login', async (request) => {
     const { facility: address, email, password, role } = loginSchema.parse(request.body);
 
-    const facility = await findFacilityByAddress(address);
-    // Unknown and suspended hospitals both land here, and the answer is the one
-    // an unknown account would get: this endpoint cannot list facilities.
-    if (!facility) {
+    const reached = await resolveSignInAddress(address);
+
+    // A hospital the operator has closed says so. Its staff cannot reason that out
+    // from a wrong-password answer, and the closure is the operator's own decision
+    // about that clinic — unlike an account, it is not a secret worth hiding.
+    if (reached.kind === 'closed') {
       await verifyPassword(password, DECOY_HASH);
+      request.log.warn(
+        { facility: reached.facility.slug, email, reason: 'hospital_closed' },
+        'sign-in refused'
+      );
+      throw badRequest(
+        `${reached.facility.name} is closed for sign-in. Ask the platform operator to reopen it.`
+      );
+    }
+
+    // An address nobody typed and a name two hospitals share get the same answer as
+    // an unknown account: this endpoint must not be able to list facilities.
+    if (reached.kind === 'miss') {
+      await verifyPassword(password, DECOY_HASH);
+      request.log.warn({ address, email, reason: reached.reason }, 'sign-in refused');
       throw badRequest('Hospital, email or password is incorrect.');
     }
 
+    const facility = reached.facility;
     const db = bindFacility(request, facility);
     const [user] = await db.select().from(staff).where(eq(staff.email, email)).limit(1);
 
-    // Same message and similar timing for unknown email and wrong password, so
-    // the endpoint cannot be used to enumerate staff accounts.
+    // Same message and similar timing for unknown email and wrong password, so the
+    // endpoint cannot be used to enumerate staff accounts. Only the server log — which
+    // the operator reads — says which of the two it was, so "I cannot log in" is
+    // answerable without resetting a password that was never wrong.
     if (!user || !(await verifyPassword(password, user.passwordHash))) {
+      request.log.warn(
+        { facility: facility.slug, email, reason: user ? 'wrong_password' : 'unknown_email' },
+        'sign-in refused'
+      );
       throw badRequest('Hospital, email or password is incorrect.');
     }
     if (!user.isActive) throw badRequest('This account has been deactivated.');
@@ -153,7 +176,7 @@ export async function authRoutes(app: FastifyInstance) {
 
   const changeSchema = z.object({
     currentPassword: z.string().min(1),
-    newPassword: z.string().min(10, 'Use at least 10 characters.')
+    newPassword: passwordField
   });
 
   app.post('/api/auth/change-password', { preHandler: authenticate() }, async (request, reply) => {

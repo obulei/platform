@@ -310,19 +310,29 @@ export function Modal({
   width?: 'sm' | 'md' | 'lg';
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  // Callers pass a fresh arrow function each render, so Escape reads it from a ref.
+  // Depending on the prop instead made this effect re-run on every keystroke, and its
+  // `.focus()` on the dialog frame pulled the caret out of the field being typed in —
+  // one character per click, in every modal in the app.
+  const close = useRef(onClose);
+  useEffect(() => {
+    close.current = onClose;
+  }, [onClose]);
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
-      if (event.key === 'Escape') onClose();
+      if (event.key === 'Escape') close.current();
     }
+    const previousOverflow = document.body.style.overflow;
     document.addEventListener('keydown', onKey);
     document.body.style.overflow = 'hidden';
-    ref.current?.focus();
+    // A field that asked for autoFocus is a better place to land than the frame.
+    if (!ref.current?.contains(document.activeElement)) ref.current?.focus();
     return () => {
       document.removeEventListener('keydown', onKey);
-      document.body.style.overflow = '';
+      document.body.style.overflow = previousOverflow;
     };
-  }, [onClose]);
+  }, []);
 
   return (
     <div className="modal-overlay" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>

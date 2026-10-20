@@ -5,8 +5,8 @@ import { usePlatformAuth } from '../platform-auth.js';
 import { Button, Card, ErrorNote, Field, Input, Modal, Table } from '../components.js';
 import type { Column } from '../components.js';
 import { classList } from '../utils.js';
+import { PASSWORD_HINT, passwordProblem } from '../password.js';
 
-const MIN_PASSWORD = 10;
 const reason = (caught: unknown) =>
   caught instanceof Error && caught.message ? caught.message : 'The platform did not accept that.';
 
@@ -62,7 +62,8 @@ export function PlatformOperatorsPage() {
     event.preventDefault();
     if (fullName.trim().length < 2) return setFormError('Enter the operator name.');
     if (!/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(email.trim())) return setFormError('Enter a valid email address.');
-    if (password.length < MIN_PASSWORD) return setFormError(`Use at least ${MIN_PASSWORD} characters.`);
+    const problem = passwordProblem(password);
+    if (problem) return setFormError(problem);
 
     setFormError(null);
     setSaving(true);
@@ -221,7 +222,7 @@ export function PlatformOperatorsPage() {
             <Field
               label="Password"
               required
-              hint={`At least ${MIN_PASSWORD} characters. Not shown again after saving, so pass it on yourself.`}
+              hint={`${PASSWORD_HINT} Not shown again after saving, so pass it on yourself.`}
             >
               <Input
                 type="password"

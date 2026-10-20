@@ -16,6 +16,7 @@ import {
   Table
 } from '../components.js';
 import type { Column } from '../components.js';
+import { PASSWORD_HINT, passwordProblem } from '../password.js';
 import { ROLES, ROLE_LABEL, ROLE_TONE, sortRoles, type Role } from '../roles.js';
 import { formatDateTime, formatMoney } from '../utils.js';
 
@@ -36,8 +37,6 @@ interface StaffMember {
   lastLoginAt: string | null;
   createdAt: string;
 }
-
-const MIN_PASSWORD = 10;
 
 interface ProfileDraft {
   fullName: string;
@@ -214,8 +213,9 @@ function CreateStaffModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
       setFieldError(invalid);
       return;
     }
-    if (password.length < MIN_PASSWORD) {
-      setFieldError(`Password must be at least ${MIN_PASSWORD} characters.`);
+    const problem = passwordProblem(password);
+    if (problem) {
+      setFieldError(problem);
       return;
     }
     setFieldError(null);
@@ -252,7 +252,7 @@ function CreateStaffModal({ onClose, onSaved }: { onClose: () => void; onSaved: 
       }
     >
       <ProfileFields draft={draft} disabled={busy} onChange={(patch) => setDraft((prev) => ({ ...prev, ...patch }))} />
-      <Field label="Initial password" required error={fieldError ?? undefined} hint={`Minimum ${MIN_PASSWORD} characters — the server rejects shorter ones.`}>
+      <Field label="Initial password" required error={fieldError ?? undefined} hint={`${PASSWORD_HINT} The server checks the same rule.`}>
         <Input
           type="password"
           value={password}
@@ -329,8 +329,9 @@ function EditStaffModal({
   }
 
   async function resetPassword() {
-    if (newPassword.length < MIN_PASSWORD) {
-      setResetFieldError(`New password must be at least ${MIN_PASSWORD} characters.`);
+    const problem = passwordProblem(newPassword);
+    if (problem) {
+      setResetFieldError(problem);
       return;
     }
     if (!adminPassword) {
@@ -408,7 +409,7 @@ function EditStaffModal({
             <Field
               label="New password"
               required
-              hint={`At least ${MIN_PASSWORD} characters.`}
+              hint={PASSWORD_HINT}
               error={resetFieldError ?? undefined}
             >
               <Input

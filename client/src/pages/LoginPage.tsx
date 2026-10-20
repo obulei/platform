@@ -127,9 +127,10 @@ export function LoginPage() {
 
         <ErrorNote error={error} onDismiss={() => setError(null)} />
         {!!error && address && (
-          // The server keeps its answer deliberately vague, so name the door this
-          // attempt knocked on: a remembered address from another hospital is the
-          // most common reason a correct email and password still fail.
+          // Except for a hospital that is closed — that one the server names — the
+          // answer stays deliberately vague, so name the door this attempt knocked
+          // on: a remembered address from another hospital is the most common reason
+          // a correct email and password still fail.
           <p className="login-foot">
             This attempt was sent to the hospital address “{address}”.
           </p>

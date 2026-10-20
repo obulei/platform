@@ -37,7 +37,7 @@ field optional for real.
 
 | Form | Component | Modal JSX | POST/PATCH endpoint | Server schema | Table |
 |---|---|---|---|---|---|
-| Staff sign in (and role choice) | `LoginPage.tsx:9` | form `:46` | `POST /api/auth/login` | `auth.routes.ts:11` | `staff:50`, `staffRoles:74` |
+| Staff sign in (and role choice) | `LoginPage.tsx:9` | form `:46` | `POST /api/auth/login` | `auth.routes.ts:27` | `staff:50`, `staffRoles:74` |
 | Register patient | `PatientsPage.tsx:296` | `:333` | `POST /api/patients` | `patients.routes.ts:28` | `patients:72` |
 | Edit patient details | `PatientDetailPage.tsx:1023` | `:1059` | `PATCH /api/patients/:id` | `patients.routes.ts:28` | `patients:72` |
 | New appointment | `AppointmentsPage.tsx:607` | `:672` | `POST /api/appointments` | `appointments.routes.ts:16` | `appointments:108` |
@@ -62,16 +62,16 @@ field optional for real.
 | Record payment | `BillingPage.tsx:354` | `:404` | `POST /api/invoices/:id/payments` | `billing.routes.ts:250` | `payments:466` |
 | Void invoice | `BillingPage.tsx:446` | `:484` | `POST /api/invoices/:id/void` | `billing.routes.ts:257` | `invoices:424` |
 | Bill an encounter | `BillingPage.tsx:685` | `:756` | `POST /api/invoices/from-encounter` | `billing.routes.ts:259` | `invoices:424` |
-| Add staff member | `StaffPage.tsx:203` | `:241` | `POST /api/staff` | `staff.routes.ts:50`, `:61` | `staff:50`, `staffRoles:74` |
-| Edit staff member and role grants | `StaffPage.tsx:275` | `:362` | `PATCH /api/staff/:id` | `staff.routes.ts:50` | `staff:50`, `staffRoles:74` |
+| Add staff member | `StaffPage.tsx:202` | `:241` | `POST /api/staff` | `staff.routes.ts:57`, `:68` | `staff:50`, `staffRoles:74` |
+| Edit staff member and role grants | `StaffPage.tsx:275` | `:363` | `PATCH /api/staff/:id` | `staff.routes.ts:57` | `staff:50`, `staffRoles:74` |
 | Platform sign in | `PlatformLoginPage.tsx:11` | form `:35` | `POST /api/platform/login` | `platform.routes.ts:34` | `platformAdmins` (`schema/platform.ts:15`) |
-| Add hospital + first administrator | `PlatformHospitalsPage.tsx:62` | `:435` | `POST /api/platform/facilities` | `platform.routes.ts:45` (nests `:39`) | `facilities` (`schema/registry.ts:21`), `staff` + `staffRoles` in the new schema |
-| Hospital identity — by the operator | `PlatformHospitalsPage.tsx:62` | `:519` | `PATCH /api/platform/facilities/:slug` | `platform.routes.ts:58`, fields from `lib/branding.ts:30` | `facilities:21` in `public` |
+| Add hospital + first administrator | `PlatformHospitalsPage.tsx:61` | `:433` | `POST /api/platform/facilities` | `platform.routes.ts:45` (nests `:39`) | `facilities` (`schema/registry.ts:21`), `staff` + `staffRoles` in the new schema |
+| Hospital identity — by the operator | `PlatformHospitalsPage.tsx:61` | `:517` | `PATCH /api/platform/facilities/:slug` | `platform.routes.ts:58`, fields from `lib/branding.ts:30` | `facilities:21` in `public` |
 | Hospital identity — by the hospital | `SettingsPage.tsx:18` | inline, fields `:95`, save `:49` | `GET` + `PATCH /api/settings` | `settings.routes.ts:39` → `lib/branding.ts:33` | `facilities:21` in `public` |
-| Add administrator to a hospital | `PlatformHospitalsPage.tsx:62` | form `:675` | `POST /api/platform/facilities/:slug/administrators` | `platform.routes.ts:39` | `staff:50`, `staffRoles:74` in that hospital's schema |
-| Rename or deactivate an administrator | `PlatformHospitalsPage.tsx:62` | form `:626` | `PATCH /api/platform/facilities/:slug/administrators/:staffId` | `platform.routes.ts:65` | `staff:50` |
-| Set an administrator's password | `PlatformHospitalsPage.tsx:62` | form `:644` | `POST /api/platform/facilities/:slug/administrators/:staffId/reset-password` | `platform.routes.ts:74` | `staff:50` |
-| Add platform operator | `PlatformOperatorsPage.tsx:22` | `:206` | `POST /api/platform/operators` | `platform.routes.ts:79` | `platformAdmins` (`schema/platform.ts:15`) |
+| Add administrator to a hospital | `PlatformHospitalsPage.tsx:61` | form `:673` | `POST /api/platform/facilities/:slug/administrators` | `platform.routes.ts:39` | `staff:50`, `staffRoles:74` in that hospital's schema |
+| Rename or deactivate an administrator | `PlatformHospitalsPage.tsx:61` | form `:624` | `PATCH /api/platform/facilities/:slug/administrators/:staffId` | `platform.routes.ts:65` | `staff:50` |
+| Set an administrator's password | `PlatformHospitalsPage.tsx:61` | form `:642` | `POST /api/platform/facilities/:slug/administrators/:staffId/reset-password` | `platform.routes.ts:74` | `staff:50` |
+| Add platform operator | `PlatformOperatorsPage.tsx:22` | `:207` | `POST /api/platform/operators` | `platform.routes.ts:77` | `platformAdmins` (`schema/platform.ts:15`) |
 
 Paths are relative to `client/src/pages/` — except the report form, which lives
 in `client/src/reports.tsx` because both the patient page and the reports page
@@ -99,18 +99,19 @@ The console forms are the exception to every other row. They write to
 `public`, not to a hospital schema, so their tables sit in `db/schema/registry.ts`
 and `db/schema/platform.ts` rather than `db/schema/index.ts`, and they are
 recorded in the server log instead of an `audit_log` — a hospital's audit trail
-belongs to that hospital alone. The address pattern and the password minimum exist
-twice, once per side of the wire: `SLUG` and `MIN_PASSWORD` at
-`PlatformHospitalsPage.tsx:21` and `:19` (and `MIN_PASSWORD` again at
-`PlatformOperatorsPage.tsx:9`) mirror `FACILITY_SLUG` in
-`server/src/db/tenant-ddl.ts` and `MIN_PASSWORD_LENGTH` in
-`server/src/lib/password.ts`. The client cannot import server code, so loosen one
-and the other still rejects — change both, and treat the server's answer as the
-rule.
+belongs to that hospital alone. Two rules exist once per side of the wire, because
+the client cannot import server code: `SLUG` at `PlatformHospitalsPage.tsx:21`
+mirrors `FACILITY_SLUG` in `server/src/db/tenant-ddl.ts`, and `passwordProblem` in
+`client/src/password.ts` mirrors `passwordField` in `server/src/lib/password.ts`.
+The client side is one shared module rather than a constant per page, so every
+password field in the app rejects the same two things — fewer than ten characters
+that are not spaces, and a space at either end — in the server's own words. Loosen
+one side and the other still rejects; change both, and treat the server's answer as
+the rule.
 
 ## Roles are ticks, and one role is active
 
-Staff roles are a checkbox set (`ProfileFields` at `StaffPage.tsx:112`) saved as
+Staff roles are a checkbox set (`ProfileFields` at `StaffPage.tsx:111`) saved as
 rows in `staffRoles`. The body always sends `roles: string[]`; the server sorts
 and de-duplicates it. A session, though, runs as **one** of those grants:
 sign-in asks for a choice when the account holds several (`role_required`,

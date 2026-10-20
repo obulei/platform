@@ -81,6 +81,17 @@ one of them work for real, activate it on the Staff screen, tick the roles it
 should hold, and set a password with `POST /api/staff/:id/reset-password` — all
 administrator-only, all audited.
 
+Every route that sets a password — a hospital's first administrator, a further
+administrator, an operator, a staff account, an administrator reset and a
+self-service change — applies one rule from one place: `passwordField` in
+`server/src/lib/password.ts`. Ten characters that are not spaces, and no space at
+either end. A bare length counter would hash twelve spaces happily, and the clinic
+would then meet a wrong-password answer every time it typed what the form had
+accepted. Sign-in itself checks nothing about a password's shape: an account created
+before this rule must still open, and a login form is not where to explain policy.
+`client/src/password.ts` mirrors the wording, so the field objects before the
+request goes out and the server's answer reads the same as the hint above it.
+
 The seed stops when the database holds any staff at all. `--force` re-runs it
 against a populated database and adds a second cohort.
 
@@ -175,7 +186,17 @@ because a hospital's audit trail belongs to that hospital alone.
 Suspending is immediate and reversible: sign-in resolves only `active` registry rows and
 every request re-reads the registry, so a token minted minutes earlier starts returning
 401 without waiting to expire. Nothing is deleted — the schema and its data wait for the
-hospital to be reopened.
+hospital to be reopened. A suspended hospital says so out loud ("PALACE is closed for
+sign-in") rather than hiding behind the wrong-password answer, because staff have no way to
+reason that out themselves and the obvious next step — resetting the password — fixes nothing.
+
+Everything else a sign-in cannot answer stays deliberately indistinguishable: an unknown
+address, a display name two hospitals share, an unknown account and a wrong password all
+return the same sentence, so the endpoint cannot list facilities or enumerate staff. What
+those four did *not* guess is recorded in the server log instead — `sign-in refused` with
+`reason` of `unknown`, `ambiguous`, `hospital_closed`, `unknown_email` or `wrong_password`,
+plus the address or hospital typed. That is what turns "the new administrator cannot log in"
+into one `grep` rather than a phone call and a password reset.
 
 Three harnesses prove all of this without touching a real database. Each builds a scratch
 database, runs the API against it, and drops it again:

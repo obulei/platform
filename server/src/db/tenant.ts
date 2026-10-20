@@ -1,6 +1,6 @@
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
-import { and, eq, sql } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { env } from '../env.js';
 import * as tenantSchema from './schema/index.js';
 import { facilities, type Facility } from './schema/registry.js';
@@ -89,25 +89,44 @@ export async function findFacilityBySlug(slug: string): Promise<Facility | null>
  *
  * An address is what provisioning hands out and never renames, but staff are told
  * their clinic's name, so a sign-in that only accepted the address silently turns
- * into a support call every time. A shared display name answers as if nobody
- * matched rather than picking one: this endpoint must not be able to list
- * facilities or hint which of two same-named clinics is which.
+ * into a support call every time. A shared display name opens neither: this
+ * endpoint must not be able to list facilities or hint which of two same-named
+ * clinics is which.
+ *
+ * A closed hospital is reported separately from a name nobody typed, because the
+ * difference is the one staff cannot work out for themselves — being told "incorrect"
+ * while their hospital is suspended wastes a phone call and a password reset.
  */
-export async function findFacilityByAddress(input: string): Promise<Facility | null> {
+export type SignInResolution =
+  | { kind: 'open'; facility: Facility }
+  | { kind: 'closed'; facility: Facility }
+  | { kind: 'miss'; reason: 'unknown' | 'ambiguous' };
+
+export async function resolveSignInAddress(input: string): Promise<SignInResolution> {
   const wanted = input.trim().toLowerCase();
 
-  const [bySlug] = await publicDb
+  const [byAddress] = await publicDb
     .select()
     .from(facilities)
     .where(sql`lower(${facilities.slug}) = ${wanted}`)
     .limit(1);
-  if (bySlug) return bySlug.status === 'active' ? bySlug : null;
+  if (byAddress) {
+    return byAddress.status === 'active'
+      ? { kind: 'open', facility: byAddress }
+      : { kind: 'closed', facility: byAddress };
+  }
 
   const sameName = await publicDb
     .select()
     .from(facilities)
-    .where(and(sql`lower(${facilities.name}) = ${wanted}`, eq(facilities.status, 'active')));
-  return sameName.length === 1 ? sameName[0] : null;
+    .where(sql`lower(${facilities.name}) = ${wanted}`);
+  const open = sameName.filter((row) => row.status === 'active');
+
+  if (open.length === 1) return { kind: 'open', facility: open[0] };
+  if (open.length > 1) return { kind: 'miss', reason: 'ambiguous' };
+  if (sameName.length === 1) return { kind: 'closed', facility: sameName[0] };
+  if (sameName.length > 1) return { kind: 'miss', reason: 'ambiguous' };
+  return { kind: 'miss', reason: 'unknown' };
 }
 
 /**

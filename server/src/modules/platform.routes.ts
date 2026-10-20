@@ -16,7 +16,7 @@ import { tenantDb, type TenantDb } from '../db/tenant.js';
 import { FACILITY_SLUG, FACILITY_SLUG_HINT } from '../db/tenant-ddl.js';
 import { authenticatePlatform, ROLES } from '../lib/auth.js';
 import { brandingEdit } from '../lib/branding.js';
-import { DECOY_HASH, hashPassword, MIN_PASSWORD_LENGTH, verifyPassword } from '../lib/password.js';
+import { DECOY_HASH, hashPassword, passwordField, verifyPassword } from '../lib/password.js';
 import { badRequest, conflict, notFound } from '../lib/errors.js';
 
 /**
@@ -39,7 +39,7 @@ const loginSchema = z.object({
 const administratorSchema = z.object({
   fullName: z.string().trim().min(2, 'Enter the administrator name.').max(120),
   email: z.string().trim().toLowerCase().email(),
-  password: z.string().min(MIN_PASSWORD_LENGTH, `Use at least ${MIN_PASSWORD_LENGTH} characters.`)
+  password: passwordField
 });
 
 const createFacilitySchema = z.object({
@@ -71,15 +71,13 @@ const administratorEditSchema = z
     message: 'Send a name, an active flag, or both.'
   });
 
-const passwordSchema = z.object({
-  password: z.string().min(MIN_PASSWORD_LENGTH, `Use at least ${MIN_PASSWORD_LENGTH} characters.`)
-});
+const passwordSchema = z.object({ password: passwordField });
 
 /** A platform operator adding another of their own kind. */
 const operatorSchema = z.object({
   fullName: z.string().trim().min(2, 'Enter the operator name.').max(120),
   email: z.string().trim().toLowerCase().email(),
-  password: z.string().min(MIN_PASSWORD_LENGTH, `Use at least ${MIN_PASSWORD_LENGTH} characters.`)
+  password: passwordField
 });
 
 /** Only the fields an operator may ever see about another operator. */
