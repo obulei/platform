@@ -1,7 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { and, asc, count, desc, eq, inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { db } from '../db/client.js';
 import {
   admissions,
   labOrderItems,
@@ -13,7 +12,14 @@ import {
   wards
 } from '../db/schema/index.js';
 import { labOrderStatus, labPriority, labResultFlag, specimenType } from '../db/schema/enums.js';
-import { authenticate, CLINICAL_ROLES, ROLES, type Role } from '../lib/auth.js';
+import {
+  authenticate,
+  CLINICAL_ROLES,
+  ROLES,
+  type Role,
+  facilityDb,
+  type TenantDb
+} from '../lib/auth.js';
 import { audit } from '../lib/audit.js';
 import { badRequest, notFound } from '../lib/errors.js';
 import { money, moneyOrNull } from '../lib/serialize.js';
@@ -148,7 +154,7 @@ function computeFlag(
   return 'normal';
 }
 
-const orderSelect = () =>
+const orderSelect = (db: TenantDb) =>
   db
     .select({
       order: labOrders,
@@ -196,7 +202,7 @@ function mapOrder(row: {
   };
 }
 
-const itemSelect = () =>
+const itemSelect = (db: TenantDb) =>
   db
     .select({
       id: labOrderItems.id,
@@ -276,11 +282,11 @@ function itemDto(row: {
   };
 }
 
-async function loadOrderDetail(id: string) {
-  const [row] = await orderSelect().where(eq(labOrders.id, id)).limit(1);
+async function loadOrderDetail(db: TenantDb, id: string) {
+  const [row] = await orderSelect(db).where(eq(labOrders.id, id)).limit(1);
   if (!row) throw notFound('Lab order');
 
-  const itemRows = await itemSelect()
+  const itemRows = await itemSelect(db)
     .where(eq(labOrderItems.labOrderId, id))
     .orderBy(asc(labTests.name));
 
@@ -288,7 +294,7 @@ async function loadOrderDetail(id: string) {
 }
 
 /** Total resultable items versus items carrying a result — used to gate completion. */
-async function resultCoverage(labOrderId: string) {
+async function resultCoverage(db: TenantDb, labOrderId: string) {
   const [items] = await db
     .select({ total: count() })
     .from(labOrderItems)
@@ -309,6 +315,7 @@ export async function labRoutes(app: FastifyInstance) {
    * ---------------------------------------------------------------- */
 
   app.get('/api/lab/tests', async (request) => {
+    const db = facilityDb(request);
     const query = z
       .object({ active: z.enum(['true', 'false', 'all']).default('true') })
       .parse(request.query);
@@ -323,6 +330,7 @@ export async function labRoutes(app: FastifyInstance) {
   });
 
   app.post('/api/lab/tests', { preHandler: authenticate(CATALOGUE_ROLES) }, async (request) => {
+    const db = facilityDb(request);
     const body = testCreateSchema.parse(request.body);
 
     const [duplicate] = await db
@@ -356,6 +364,7 @@ export async function labRoutes(app: FastifyInstance) {
   });
 
   app.patch('/api/lab/tests/:id', { preHandler: authenticate(CATALOGUE_ROLES) }, async (request) => {
+    const db = facilityDb(request);
     const { id } = idParam.parse(request.params);
     const body = testPatchSchema.parse(request.body);
 
@@ -402,6 +411,7 @@ export async function labRoutes(app: FastifyInstance) {
    * ---------------------------------------------------------------- */
 
   app.get('/api/lab/orders', async (request) => {
+    const db = facilityDb(request);
     const query = z
       .object({
         status: z.enum(ORDER_STATUSES).optional(),
@@ -418,7 +428,7 @@ export async function labRoutes(app: FastifyInstance) {
     if (query.patientId) filters.push(eq(labOrders.patientId, query.patientId));
     const where = filters.length ? and(...filters) : undefined;
 
-    const rows = await orderSelect()
+    const rows = await orderSelect(db)
       .where(where)
       .orderBy(desc(labOrders.orderedAt))
       .limit(query.limit)
@@ -434,6 +444,7 @@ export async function labRoutes(app: FastifyInstance) {
    * the static segment first, but keeping the order literal documents intent.
    */
   app.get('/api/lab/orders/worklist', { preHandler: authenticate(WORKLIST_ROLES) }, async (request) => {
+    const db = facilityDb(request);
     const query = z
       .object({
         status: z.string().max(200).optional(),
@@ -459,7 +470,7 @@ export async function labRoutes(app: FastifyInstance) {
       if (requested.length) statuses = requested as OrderStatus[];
     }
 
-    const rows = await orderSelect()
+    const rows = await orderSelect(db)
       .where(
         and(
           inArray(labOrders.status, statuses),
@@ -477,11 +488,13 @@ export async function labRoutes(app: FastifyInstance) {
   });
 
   app.get('/api/lab/orders/:id', async (request) => {
+    const db = facilityDb(request);
     const { id } = idParam.parse(request.params);
-    return loadOrderDetail(id);
+    return loadOrderDetail(db, id);
   });
 
   app.post('/api/lab/orders', { preHandler: authenticate(ORDER_CREATE_ROLES) }, async (request) => {
+    const db = facilityDb(request);
     const body = orderCreateSchema.parse(request.body);
     const testIds = [...new Set(body.testIds)];
 
@@ -548,13 +561,14 @@ export async function labRoutes(app: FastifyInstance) {
         tests: created.items.length
       }
     });
-    return loadOrderDetail(created.order.id);
+    return loadOrderDetail(db, created.order.id);
   });
 
   app.patch(
     '/api/lab/orders/:id/status',
     { preHandler: authenticate(STATUS_ROLES) },
     async (request) => {
+      const db = facilityDb(request);
       const { id } = idParam.parse(request.params);
       const body = statusSchema.parse(request.body);
 
@@ -573,7 +587,7 @@ export async function labRoutes(app: FastifyInstance) {
         if (!RESULT_ROLES.includes(request.currentUser!.role)) {
           throw badRequest('Only laboratory staff or a clinician may complete a lab order.');
         }
-        const { items, resulted } = await resultCoverage(id);
+        const { items, resulted } = await resultCoverage(db, id);
         if (items === 0) throw badRequest('This lab order has no tests to result.');
         if (resulted < items) {
           throw badRequest('Enter a result for every test before completing the order.');
@@ -607,6 +621,7 @@ export async function labRoutes(app: FastifyInstance) {
     '/api/lab/orders/:id/cancel',
     { preHandler: authenticate(CANCEL_ROLES) },
     async (request) => {
+      const db = facilityDb(request);
       const { id } = idParam.parse(request.params);
       const body = cancelSchema.parse(request.body);
 
@@ -643,6 +658,7 @@ export async function labRoutes(app: FastifyInstance) {
     '/api/lab/items/:itemId/result',
     { preHandler: authenticate(RESULT_ROLES) },
     async (request) => {
+      const db = facilityDb(request);
       const { itemId } = itemIdParam.parse(request.params);
       const body = resultSchema.parse(request.body);
 
@@ -706,7 +722,7 @@ export async function labRoutes(app: FastifyInstance) {
         })
         .returning();
 
-      const coverage = await resultCoverage(item.labOrderId);
+      const coverage = await resultCoverage(db, item.labOrderId);
       const allItemsResulted = coverage.items > 0 && coverage.resulted >= coverage.items;
 
       await audit(request, {
@@ -751,6 +767,7 @@ export async function labRoutes(app: FastifyInstance) {
   );
 
   app.post('/api/lab/results/:id/verify', { preHandler: authenticate(VERIFY_ROLES) }, async (request) => {
+    const db = facilityDb(request);
     const { id } = idParam.parse(request.params);
 
     const [row] = await db

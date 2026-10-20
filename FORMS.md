@@ -37,7 +37,7 @@ field optional for real.
 
 | Form | Component | Modal JSX | POST/PATCH endpoint | Server schema | Table |
 |---|---|---|---|---|---|
-| Staff sign in (and role choice) | `LoginPage.tsx:9` | form `:44` | `POST /api/auth/login` | `auth.routes.ts:11` | `staff:50`, `staffRoles:74` |
+| Staff sign in (and role choice) | `LoginPage.tsx:9` | form `:46` | `POST /api/auth/login` | `auth.routes.ts:11` | `staff:50`, `staffRoles:74` |
 | Register patient | `PatientsPage.tsx:296` | `:333` | `POST /api/patients` | `patients.routes.ts:28` | `patients:72` |
 | Edit patient details | `PatientDetailPage.tsx:1023` | `:1059` | `PATCH /api/patients/:id` | `patients.routes.ts:28` | `patients:72` |
 | New appointment | `AppointmentsPage.tsx:607` | `:672` | `POST /api/appointments` | `appointments.routes.ts:16` | `appointments:108` |
@@ -64,6 +64,14 @@ field optional for real.
 | Bill an encounter | `BillingPage.tsx:685` | `:756` | `POST /api/invoices/from-encounter` | `billing.routes.ts:259` | `invoices:424` |
 | Add staff member | `StaffPage.tsx:203` | `:241` | `POST /api/staff` | `staff.routes.ts:50`, `:61` | `staff:50`, `staffRoles:74` |
 | Edit staff member and role grants | `StaffPage.tsx:275` | `:362` | `PATCH /api/staff/:id` | `staff.routes.ts:50` | `staff:50`, `staffRoles:74` |
+| Platform sign in | `PlatformLoginPage.tsx:11` | form `:35` | `POST /api/platform/login` | `platform.routes.ts:34` | `platformAdmins` (`schema/platform.ts:15`) |
+| Add hospital + first administrator | `PlatformHospitalsPage.tsx:62` | `:435` | `POST /api/platform/facilities` | `platform.routes.ts:45` (nests `:39`) | `facilities` (`schema/registry.ts:21`), `staff` + `staffRoles` in the new schema |
+| Hospital identity — by the operator | `PlatformHospitalsPage.tsx:62` | `:519` | `PATCH /api/platform/facilities/:slug` | `platform.routes.ts:58`, fields from `lib/branding.ts:30` | `facilities:21` in `public` |
+| Hospital identity — by the hospital | `SettingsPage.tsx:18` | inline, fields `:95`, save `:49` | `GET` + `PATCH /api/settings` | `settings.routes.ts:39` → `lib/branding.ts:33` | `facilities:21` in `public` |
+| Add administrator to a hospital | `PlatformHospitalsPage.tsx:62` | form `:675` | `POST /api/platform/facilities/:slug/administrators` | `platform.routes.ts:39` | `staff:50`, `staffRoles:74` in that hospital's schema |
+| Rename or deactivate an administrator | `PlatformHospitalsPage.tsx:62` | form `:626` | `PATCH /api/platform/facilities/:slug/administrators/:staffId` | `platform.routes.ts:65` | `staff:50` |
+| Set an administrator's password | `PlatformHospitalsPage.tsx:62` | form `:644` | `POST /api/platform/facilities/:slug/administrators/:staffId/reset-password` | `platform.routes.ts:74` | `staff:50` |
+| Add platform operator | `PlatformOperatorsPage.tsx:22` | `:206` | `POST /api/platform/operators` | `platform.routes.ts:79` | `platformAdmins` (`schema/platform.ts:15`) |
 
 Paths are relative to `client/src/pages/` — except the report form, which lives
 in `client/src/reports.tsx` because both the patient page and the reports page
@@ -71,6 +79,34 @@ render it — plus `server/src/modules/` and `server/src/db/schema/` (all tables
 share `index.ts`). Filter bars and pickers (`PatientPicker`, `MedicinePicker`,
 tab status selects) are search controls, not data-entry forms; they live in the
 same files at the line numbers above.
+
+Suspending or reopening a hospital and removing an operator are single buttons, not
+forms — `POST/PATCH` with no fields the operator types, so they have no row here.
+Both guard against the one state that would strand the deployment: the last
+administrator who can sign in at a hospital cannot be deactivated, and the last
+operator cannot be removed.
+
+The two hospital-identity forms edit the same five registry columns and run the same
+validator, `brandingFields` in `server/src/lib/branding.ts`. They are the only place
+where a hospital's own staff write something that is not clinical data: the mark,
+tagline, accent colour and the two printed-report lines sit on the registry row,
+which the API picks from the session's facility claim — never from the body. Every
+field is optional, so a save that sends one line leaves the other four alone, and a
+blank one returns the shared default. An administrator's save is audited inside that
+hospital's own `audit_log`, because the request was bound to its schema first.
+
+The console forms are the exception to every other row. They write to
+`public`, not to a hospital schema, so their tables sit in `db/schema/registry.ts`
+and `db/schema/platform.ts` rather than `db/schema/index.ts`, and they are
+recorded in the server log instead of an `audit_log` — a hospital's audit trail
+belongs to that hospital alone. The address pattern and the password minimum exist
+twice, once per side of the wire: `SLUG` and `MIN_PASSWORD` at
+`PlatformHospitalsPage.tsx:21` and `:19` (and `MIN_PASSWORD` again at
+`PlatformOperatorsPage.tsx:9`) mirror `FACILITY_SLUG` in
+`server/src/db/tenant-ddl.ts` and `MIN_PASSWORD_LENGTH` in
+`server/src/lib/password.ts`. The client cannot import server code, so loosen one
+and the other still rejects — change both, and treat the server's answer as the
+rule.
 
 ## Roles are ticks, and one role is active
 

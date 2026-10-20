@@ -2,7 +2,6 @@ import type { FastifyInstance } from 'fastify';
 import { and, asc, count, desc, eq, gte, ilike, inArray, lt, or, sql } from 'drizzle-orm';
 import type { SQLWrapper } from 'drizzle-orm';
 import { z } from 'zod';
-import { db } from '../db/client.js';
 import {
   admissions,
   appointments,
@@ -20,7 +19,13 @@ import {
   wards
 } from '../db/schema/index.js';
 import { invoiceItemCategory, invoiceStatus, paymentMethod } from '../db/schema/enums.js';
-import { authenticate, CLINICAL_ROLES, ROLES } from '../lib/auth.js';
+import {
+  authenticate,
+  CLINICAL_ROLES,
+  ROLES,
+  facilityDb,
+  type TenantDb
+} from '../lib/auth.js';
 import type { Role } from '../lib/auth.js';
 import type { PgDatabase } from 'drizzle-orm/pg-core';
 import { audit } from '../lib/audit.js';
@@ -78,7 +83,7 @@ function computeTotals(
  * is never trusted from the client; a void invoice is terminal and keeps its
  * void flag (and its payments) untouched. Returns the recomputed totals.
  */
-async function recomputeInvoiceStatus(invoiceId: string, tx?: Executor): Promise<Totals & { status: InvoiceStatus }> {
+async function recomputeInvoiceStatus(db: TenantDb, invoiceId: string, tx?: Executor): Promise<Totals & { status: InvoiceStatus }> {
   const exec = tx ?? db;
 
   const [invoice] = await exec
@@ -126,7 +131,7 @@ async function recomputeInvoiceStatus(invoiceId: string, tx?: Executor): Promise
  * while the invoice is a draft, or issued with zero payments; once money lands
  * the ledger is frozen (payments must be reversed first). Void is terminal.
  */
-async function assertEditableInvoice(invoiceId: string, tx?: Executor) {
+async function assertEditableInvoice(db: TenantDb, invoiceId: string, tx?: Executor) {
   const exec = tx ?? db;
   const [invoice] = await exec.select().from(invoices).where(eq(invoices.id, invoiceId)).limit(1);
   if (!invoice) throw notFound('Invoice');
@@ -143,7 +148,7 @@ async function assertEditableInvoice(invoiceId: string, tx?: Executor) {
 }
 
 /** Full invoice view: header + line items (with lineTotal) + payments + totals. */
-async function buildInvoiceDetail(invoiceId: string) {
+async function buildInvoiceDetail(db: TenantDb, invoiceId: string) {
   const [header] = await db
     .select({
       id: invoices.id,
@@ -284,6 +289,7 @@ export async function billingRoutes(app: FastifyInstance) {
 
   // ---------------------------------------------------------------- GET list
   app.get('/api/invoices', async (request) => {
+    const db = facilityDb(request);
     const query = z
       .object({
         status: z.enum(invoiceStatus.enumValues).optional(),
@@ -334,7 +340,7 @@ export async function billingRoutes(app: FastifyInstance) {
 
     // Totals are computed in JS (never string-summed in SQL) for exactness.
     const invoiceIds = rows.map((row) => row.id);
-    const [itemsByInvoice, paysByInvoice] = await loadAggregates(invoiceIds);
+    const [itemsByInvoice, paysByInvoice] = await loadAggregates(db, invoiceIds);
 
     const items = rows.map((row) => {
       const totals = computeTotals(itemsByInvoice.get(row.id) ?? [], paysByInvoice.get(row.id) ?? []);
@@ -360,7 +366,8 @@ export async function billingRoutes(app: FastifyInstance) {
   app.get(
     '/api/invoices/summary',
     { preHandler: authenticate(WRITE_ROLES) },
-    async () => {
+    async (request) => {
+      const db = facilityDb(request);
       const now = new Date();
       const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
       const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -371,7 +378,7 @@ export async function billingRoutes(app: FastifyInstance) {
         .where(inArray(invoices.status, ['issued', 'partial']));
 
       const outstandingIds = outstandingRows.map((row) => row.id);
-      const [itemsByInvoice, paysByInvoice] = await loadAggregates(outstandingIds);
+      const [itemsByInvoice, paysByInvoice] = await loadAggregates(db, outstandingIds);
 
       let outstandingCount = 0;
       const outstandingAmounts: number[] = [];
@@ -415,8 +422,9 @@ export async function billingRoutes(app: FastifyInstance) {
 
   // ------------------------------------------------------------- GET detail
   app.get('/api/invoices/:id', async (request) => {
+    const db = facilityDb(request);
     const { id } = idParam.parse(request.params);
-    return buildInvoiceDetail(id);
+    return buildInvoiceDetail(db, id);
   });
 
   // ------------------------------------------------------------ POST create
@@ -424,6 +432,7 @@ export async function billingRoutes(app: FastifyInstance) {
     '/api/invoices',
     { preHandler: authenticate(WRITE_ROLES) },
     async (request) => {
+      const db = facilityDb(request);
       const body = createInvoiceSchema.parse(request.body);
 
       const [patient] = await db
@@ -457,7 +466,7 @@ export async function billingRoutes(app: FastifyInstance) {
           }))
         );
 
-        const totals = await recomputeInvoiceStatus(invoice.id, tx);
+        const totals = await recomputeInvoiceStatus(db, invoice.id, tx);
         return { invoice, totals };
       });
 
@@ -473,7 +482,7 @@ export async function billingRoutes(app: FastifyInstance) {
         }
       });
 
-      return buildInvoiceDetail(created.invoice.id);
+      return buildInvoiceDetail(db, created.invoice.id);
     }
   );
 
@@ -482,12 +491,13 @@ export async function billingRoutes(app: FastifyInstance) {
     '/api/invoices/:id/items',
     { preHandler: authenticate(WRITE_ROLES) },
     async (request) => {
+      const db = facilityDb(request);
       const { id } = idParam.parse(request.params);
       const parsed = addItemsSchema.parse(request.body);
       const lines = Array.isArray(parsed) ? parsed : [parsed];
 
       await db.transaction(async (tx) => {
-        await assertEditableInvoice(id, tx);
+        await assertEditableInvoice(db, id, tx);
         await tx.insert(invoiceItems).values(
           lines.map((item) => ({
             invoiceId: id,
@@ -498,7 +508,7 @@ export async function billingRoutes(app: FastifyInstance) {
             referenceId: item.referenceId ?? null
           }))
         );
-        await recomputeInvoiceStatus(id, tx);
+        await recomputeInvoiceStatus(db, id, tx);
       });
 
       await audit(request, {
@@ -507,7 +517,7 @@ export async function billingRoutes(app: FastifyInstance) {
         entityId: id,
         data: { count: lines.length }
       });
-      return buildInvoiceDetail(id);
+      return buildInvoiceDetail(db, id);
     }
   );
 
@@ -516,12 +526,13 @@ export async function billingRoutes(app: FastifyInstance) {
     '/api/invoices/:id/items/:itemId',
     { preHandler: authenticate(WRITE_ROLES) },
     async (request) => {
+      const db = facilityDb(request);
       const { id, itemId } = itemParam.parse(request.params);
       const body = itemInput.partial().parse(request.body);
       if (Object.keys(body).length === 0) throw badRequest('Nothing to update.');
 
       await db.transaction(async (tx) => {
-        await assertEditableInvoice(id, tx);
+        await assertEditableInvoice(db, id, tx);
         const [existing] = await tx
           .select({ id: invoiceItems.id })
           .from(invoiceItems)
@@ -537,7 +548,7 @@ export async function billingRoutes(app: FastifyInstance) {
         if ('referenceId' in body) updates.referenceId = body.referenceId ?? null;
 
         await tx.update(invoiceItems).set(updates).where(eq(invoiceItems.id, itemId));
-        await recomputeInvoiceStatus(id, tx);
+        await recomputeInvoiceStatus(db, id, tx);
       });
 
       await audit(request, {
@@ -546,7 +557,7 @@ export async function billingRoutes(app: FastifyInstance) {
         entityId: id,
         data: { itemId, fields: Object.keys(body) }
       });
-      return buildInvoiceDetail(id);
+      return buildInvoiceDetail(db, id);
     }
   );
 
@@ -555,10 +566,11 @@ export async function billingRoutes(app: FastifyInstance) {
     '/api/invoices/:id/items/:itemId',
     { preHandler: authenticate(WRITE_ROLES) },
     async (request) => {
+      const db = facilityDb(request);
       const { id, itemId } = itemParam.parse(request.params);
 
       await db.transaction(async (tx) => {
-        await assertEditableInvoice(id, tx);
+        await assertEditableInvoice(db, id, tx);
         const [existing] = await tx
           .select({ id: invoiceItems.id })
           .from(invoiceItems)
@@ -566,7 +578,7 @@ export async function billingRoutes(app: FastifyInstance) {
           .limit(1);
         if (!existing) throw notFound('Invoice item');
         await tx.delete(invoiceItems).where(eq(invoiceItems.id, itemId));
-        await recomputeInvoiceStatus(id, tx);
+        await recomputeInvoiceStatus(db, id, tx);
       });
 
       await audit(request, {
@@ -575,7 +587,7 @@ export async function billingRoutes(app: FastifyInstance) {
         entityId: id,
         data: { itemId }
       });
-      return buildInvoiceDetail(id);
+      return buildInvoiceDetail(db, id);
     }
   );
 
@@ -584,10 +596,11 @@ export async function billingRoutes(app: FastifyInstance) {
     '/api/invoices/:id',
     { preHandler: authenticate(WRITE_ROLES) },
     async (request) => {
+      const db = facilityDb(request);
       const { id } = idParam.parse(request.params);
       const body = patchInvoiceSchema.parse(request.body);
 
-      await assertEditableInvoice(id);
+      await assertEditableInvoice(db, id);
 
       const updates: Partial<typeof invoices.$inferInsert> = {};
       if ('notes' in body) updates.notes = body.notes ?? null;
@@ -596,7 +609,7 @@ export async function billingRoutes(app: FastifyInstance) {
       updates.updatedAt = new Date();
 
       await db.update(invoices).set(updates).where(eq(invoices.id, id));
-      await recomputeInvoiceStatus(id);
+      await recomputeInvoiceStatus(db, id);
 
       await audit(request, {
         action: 'invoice.updated',
@@ -604,7 +617,7 @@ export async function billingRoutes(app: FastifyInstance) {
         entityId: id,
         data: { fields: Object.keys(body) }
       });
-      return buildInvoiceDetail(id);
+      return buildInvoiceDetail(db, id);
     }
   );
 
@@ -613,6 +626,7 @@ export async function billingRoutes(app: FastifyInstance) {
     '/api/invoices/:id/issue',
     { preHandler: authenticate(WRITE_ROLES) },
     async (request) => {
+      const db = facilityDb(request);
       const { id } = idParam.parse(request.params);
 
       await db.transaction(async (tx) => {
@@ -636,7 +650,7 @@ export async function billingRoutes(app: FastifyInstance) {
           })
           .where(eq(invoices.id, id));
 
-        await recomputeInvoiceStatus(id, tx);
+        await recomputeInvoiceStatus(db, id, tx);
       });
 
       await audit(request, {
@@ -644,7 +658,7 @@ export async function billingRoutes(app: FastifyInstance) {
         entity: 'invoice',
         entityId: id
       });
-      return buildInvoiceDetail(id);
+      return buildInvoiceDetail(db, id);
     }
   );
 
@@ -653,6 +667,7 @@ export async function billingRoutes(app: FastifyInstance) {
     '/api/invoices/:id/payments',
     { preHandler: authenticate(WRITE_ROLES) },
     async (request) => {
+      const db = facilityDb(request);
       const { id } = idParam.parse(request.params);
       const body = paymentSchema.parse(request.body);
 
@@ -690,7 +705,7 @@ export async function billingRoutes(app: FastifyInstance) {
           })
           .returning();
 
-        const refreshed = await recomputeInvoiceStatus(id, tx);
+        const refreshed = await recomputeInvoiceStatus(db, id, tx);
         return { payment, refreshed };
       });
 
@@ -705,7 +720,7 @@ export async function billingRoutes(app: FastifyInstance) {
           balanceDue: created.refreshed.balanceDue
         }
       });
-      return buildInvoiceDetail(id);
+      return buildInvoiceDetail(db, id);
     }
   );
 
@@ -714,6 +729,7 @@ export async function billingRoutes(app: FastifyInstance) {
     '/api/invoices/:id/payments/:paymentId',
     { preHandler: authenticate(VOID_ROLES) },
     async (request) => {
+      const db = facilityDb(request);
       const { id, paymentId } = paymentParam.parse(request.params);
 
       const reversed = await db.transaction(async (tx) => {
@@ -732,7 +748,7 @@ export async function billingRoutes(app: FastifyInstance) {
         }
 
         await tx.delete(payments).where(eq(payments.id, paymentId));
-        const refreshed = await recomputeInvoiceStatus(id, tx);
+        const refreshed = await recomputeInvoiceStatus(db, id, tx);
         return { latest, refreshed };
       });
 
@@ -747,7 +763,7 @@ export async function billingRoutes(app: FastifyInstance) {
           balanceDue: reversed.refreshed.balanceDue
         }
       });
-      return buildInvoiceDetail(id);
+      return buildInvoiceDetail(db, id);
     }
   );
 
@@ -756,6 +772,7 @@ export async function billingRoutes(app: FastifyInstance) {
     '/api/invoices/:id/void',
     { preHandler: authenticate(VOID_ROLES) },
     async (request) => {
+      const db = facilityDb(request);
       const { id } = idParam.parse(request.params);
       const body = voidSchema.parse(request.body);
 
@@ -788,7 +805,7 @@ export async function billingRoutes(app: FastifyInstance) {
         entityId: id,
         data: { reason: body.reason }
       });
-      return buildInvoiceDetail(id);
+      return buildInvoiceDetail(db, id);
     }
   );
 
@@ -797,6 +814,7 @@ export async function billingRoutes(app: FastifyInstance) {
     '/api/invoices/from-encounter',
     { preHandler: authenticate(WRITE_ROLES) },
     async (request) => {
+      const db = facilityDb(request);
       const body = encounterSchema.parse(request.body);
 
       const lines: DraftLine[] = [];
@@ -830,14 +848,14 @@ export async function billingRoutes(app: FastifyInstance) {
         dayStart.setHours(0, 0, 0, 0);
         const dayEnd = new Date(dayStart.getTime() + MS_PER_DAY);
 
-        await addLabLines(lines, {
+        await addLabLines(db, lines, {
           patientId,
           from: dayStart,
           to: dayEnd
         });
-        await addPrescriptionLines(lines, { appointmentId: appointment.id });
+        await addPrescriptionLines(db, lines, { appointmentId: appointment.id });
 
-        await refuseIfDraftExists('referenceId', appointment.id);
+        await refuseIfDraftExists(db, 'referenceId', appointment.id);
       } else {
         const [admission] = await db
           .select({
@@ -868,10 +886,10 @@ export async function billingRoutes(app: FastifyInstance) {
           referenceId: admission.id
         });
 
-        await addLabLines(lines, { patientId, admissionId: admission.id });
-        await addPrescriptionLines(lines, { admissionId: admission.id });
+        await addLabLines(db, lines, { patientId, admissionId: admission.id });
+        await addPrescriptionLines(db, lines, { admissionId: admission.id });
 
-        await refuseIfDraftExists('admissionId', admission.id);
+        await refuseIfDraftExists(db, 'admissionId', admission.id);
       }
 
       if (lines.length === 0) throw badRequest('No billable charges found for this encounter.');
@@ -898,7 +916,7 @@ export async function billingRoutes(app: FastifyInstance) {
           }))
         );
 
-        const totals = await recomputeInvoiceStatus(invoice.id, tx);
+        const totals = await recomputeInvoiceStatus(db, invoice.id, tx);
         return { invoice, totals };
       });
 
@@ -916,7 +934,7 @@ export async function billingRoutes(app: FastifyInstance) {
         }
       });
 
-      return buildInvoiceDetail(created.invoice.id);
+      return buildInvoiceDetail(db, created.invoice.id);
     }
   );
 }
@@ -933,7 +951,7 @@ function ilikeNumber(term: string) {
  * Loads items + payments for a set of invoices and buckets them by invoice id,
  * so the list endpoints can compute exact totals in JS without a query per row.
  */
-async function loadAggregates(invoiceIds: string[]): Promise<
+async function loadAggregates(db: TenantDb, invoiceIds: string[]): Promise<
   [Map<string, { quantity: string; unitPrice: string }[]>, Map<string, { amount: string }[]>]
 > {
   const itemsByInvoice = new Map<string, { quantity: string; unitPrice: string }[]>();
@@ -968,7 +986,7 @@ async function loadAggregates(invoiceIds: string[]): Promise<
  * the encounter: admission-linked orders for an admission, patient + day window
  * for an appointment.
  */
-async function addLabLines(
+async function addLabLines(db: TenantDb, 
   lines: DraftLine[],
   scope: { patientId: string; admissionId?: string; from?: Date; to?: Date }
 ) {
@@ -1013,7 +1031,7 @@ async function addLabLines(
  * One 'medicine' line per dispensed prescription at
  * sum(dispensedQuantity * medicine.price).
  */
-async function addPrescriptionLines(
+async function addPrescriptionLines(db: TenantDb, 
   lines: DraftLine[],
   scope: { appointmentId?: string; admissionId?: string }
 ) {
@@ -1065,7 +1083,7 @@ async function addPrescriptionLines(
  * (which has no column on invoices) the consultation line carries the appointment
  * id as its referenceId.
  */
-async function refuseIfDraftExists(mode: 'admissionId' | 'referenceId', encounterId: string) {
+async function refuseIfDraftExists(db: TenantDb, mode: 'admissionId' | 'referenceId', encounterId: string) {
   if (mode === 'admissionId') {
     const [existing] = await db
       .select({ number: invoices.number })

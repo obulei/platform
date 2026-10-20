@@ -1,7 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { and, desc, eq, isNotNull } from 'drizzle-orm';
 import { z } from 'zod';
-import { db } from '../db/client.js';
 import {
   admissions,
   appointments,
@@ -19,7 +18,13 @@ import {
   vitalsRecords,
   wards
 } from '../db/schema/index.js';
-import { authenticate, CLINICAL_ROLES, PATIENT_RECORD_READ, ROLES } from '../lib/auth.js';
+import {
+  authenticate,
+  CLINICAL_ROLES,
+  PATIENT_RECORD_READ,
+  ROLES,
+  facilityDb
+} from '../lib/auth.js';
 import { audit } from '../lib/audit.js';
 import { badRequest, forbidden, notFound } from '../lib/errors.js';
 import { moneyOrNull } from '../lib/serialize.js';
@@ -129,6 +134,7 @@ export async function reportRoutes(app: FastifyInstance) {
 
   /** Index of reports, newest first. Bodies need a care role. */
   app.get('/api/reports', { preHandler: authenticate(PATIENT_RECORD_READ) }, async (request) => {
+    const db = facilityDb(request);
     const query = z
       .object({
         patientId: z.string().uuid().optional(),
@@ -184,6 +190,7 @@ export async function reportRoutes(app: FastifyInstance) {
    * prescriptions taken during it.
    */
   app.get('/api/reports/:id', { preHandler: authenticate(CLINICAL_ROLES) }, async (request) => {
+    const db = facilityDb(request);
     const { id } = idParam.parse(request.params);
 
     const [report] = await db.select().from(clinicalReports).where(eq(clinicalReports.id, id)).limit(1);
@@ -378,6 +385,7 @@ export async function reportRoutes(app: FastifyInstance) {
   });
 
   app.post('/api/reports', { preHandler: authenticate(REPORT_AUTHORS) }, async (request) => {
+    const db = facilityDb(request);
     const body = createSchema.parse(request.body);
 
     const [patientRow] = await db
@@ -433,6 +441,7 @@ export async function reportRoutes(app: FastifyInstance) {
   });
 
   app.patch('/api/reports/:id', { preHandler: authenticate(REPORT_AUTHORS) }, async (request) => {
+    const db = facilityDb(request);
     const { id } = idParam.parse(request.params);
     const body = updateSchema.parse(request.body);
 

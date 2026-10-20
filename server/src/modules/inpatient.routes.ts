@@ -1,7 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { and, asc, count, desc, eq, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { db } from '../db/client.js';
 import {
   admissions,
   bedStatus,
@@ -14,7 +13,13 @@ import {
   wardUnitType,
   wards
 } from '../db/schema/index.js';
-import { authenticate, CLINICAL_ROLES, ROLES } from '../lib/auth.js';
+import {
+  authenticate,
+  CLINICAL_ROLES,
+  ROLES,
+  facilityDb,
+  type TenantDb
+} from '../lib/auth.js';
 import { audit } from '../lib/audit.js';
 import { badRequest, conflict, notFound } from '../lib/errors.js';
 import { moneyOrNull, round2 } from '../lib/serialize.js';
@@ -141,7 +146,7 @@ function toVitalsDto(row: VitalRow) {
 }
 
 /** Admissions joined with the display names callers expect. */
-function admissionSelect() {
+function admissionSelect(db: TenantDb) {
   return db
     .select({
       id: admissions.id,
@@ -179,7 +184,8 @@ export async function inpatientRoutes(app: FastifyInstance) {
 
   /* ---------------------------- Wards & beds ---------------------------- */
 
-  app.get('/api/wards', async () => {
+  app.get('/api/wards', async (request) => {
+    const db = facilityDb(request);
     // Occupancy is derived from open admissions (dischargedAt is null), never
     // from a stored flag: a bed counts as occupied only while an admission row
     // still holds it. One left join yields one row per bed, so the conditional
@@ -224,6 +230,7 @@ export async function inpatientRoutes(app: FastifyInstance) {
   });
 
   app.get('/api/wards/:id/beds', async (request) => {
+    const db = facilityDb(request);
     const { id } = idParam.parse(request.params);
 
     const [ward] = await db.select({ id: wards.id }).from(wards).where(eq(wards.id, id)).limit(1);
@@ -266,6 +273,7 @@ export async function inpatientRoutes(app: FastifyInstance) {
   });
 
   app.post('/api/wards', { preHandler: authenticate(ADMIN_ONLY) }, async (request) => {
+    const db = facilityDb(request);
     const body = wardSchema.parse(request.body);
     const [row] = await db.insert(wards).values(body).returning();
 
@@ -279,6 +287,7 @@ export async function inpatientRoutes(app: FastifyInstance) {
   });
 
   app.patch('/api/wards/:id', { preHandler: authenticate(ADMIN_ONLY) }, async (request) => {
+    const db = facilityDb(request);
     const { id } = idParam.parse(request.params);
     const body = wardSchema.partial().parse(request.body);
 
@@ -302,6 +311,7 @@ export async function inpatientRoutes(app: FastifyInstance) {
     '/api/wards/:id/beds',
     { preHandler: authenticate(ADMIN_NURSE) },
     async (request) => {
+      const db = facilityDb(request);
       const { id } = idParam.parse(request.params);
       const body = bedSchema.parse(request.body);
 
@@ -326,6 +336,7 @@ export async function inpatientRoutes(app: FastifyInstance) {
   );
 
   app.patch('/api/beds/:id', { preHandler: authenticate(ADMIN_NURSE) }, async (request) => {
+    const db = facilityDb(request);
     const { id } = idParam.parse(request.params);
     const body = bedSchema.partial().parse(request.body);
 
@@ -348,6 +359,7 @@ export async function inpatientRoutes(app: FastifyInstance) {
   /* ---------------------------- Admissions ---------------------------- */
 
   app.get('/api/admissions', async (request) => {
+    const db = facilityDb(request);
     const query = z
       .object({
         status: z.enum(['admitted', 'discharged']).optional(),
@@ -364,7 +376,7 @@ export async function inpatientRoutes(app: FastifyInstance) {
     if (query.patientId) filters.push(eq(admissions.patientId, query.patientId));
     const where = filters.length ? and(...filters) : undefined;
 
-    const items = await admissionSelect()
+    const items = await admissionSelect(db)
       .where(where)
       .orderBy(desc(admissions.admittedAt))
       .limit(query.limit)
@@ -379,15 +391,16 @@ export async function inpatientRoutes(app: FastifyInstance) {
   });
 
   // The census: every still-open admission, newest first.
-  app.get('/api/admissions/current', async () => {
-    return admissionSelect()
+  app.get('/api/admissions/current', async (request) => {
+    return admissionSelect(facilityDb(request))
       .where(isNull(admissions.dischargedAt))
       .orderBy(desc(admissions.admittedAt));
   });
 
   app.get('/api/admissions/:id', async (request) => {
+    const db = facilityDb(request);
     const { id } = idParam.parse(request.params);
-    const [admission] = await admissionSelect().where(eq(admissions.id, id)).limit(1);
+    const [admission] = await admissionSelect(db).where(eq(admissions.id, id)).limit(1);
     if (!admission) throw notFound('Admission');
 
     const canSeeClinical = CLINICAL_ROLES.includes(request.currentUser!.role);
@@ -437,6 +450,7 @@ export async function inpatientRoutes(app: FastifyInstance) {
     '/api/admissions',
     { preHandler: authenticate(ADMISSION_CREATE) },
     async (request) => {
+      const db = facilityDb(request);
       const body = admissionCreateSchema.parse(request.body);
 
       const [patient] = await db
@@ -512,6 +526,7 @@ export async function inpatientRoutes(app: FastifyInstance) {
   );
 
   app.patch('/api/admissions/:id', { preHandler: authenticate(ADMISSION_WRITE) }, async (request) => {
+    const db = facilityDb(request);
     const { id } = idParam.parse(request.params);
     const body = admissionUpdateSchema.parse(request.body);
 
@@ -588,6 +603,7 @@ export async function inpatientRoutes(app: FastifyInstance) {
     '/api/admissions/:id/discharge',
     { preHandler: authenticate(ADMISSION_WRITE) },
     async (request) => {
+      const db = facilityDb(request);
       const { id } = idParam.parse(request.params);
       const body = dischargeSchema.parse(request.body);
 
@@ -633,6 +649,7 @@ export async function inpatientRoutes(app: FastifyInstance) {
     '/api/admissions/:id/notes',
     { preHandler: authenticate(CLINICAL_ROLES) },
     async (request) => {
+      const db = facilityDb(request);
       const { id } = idParam.parse(request.params);
       const body = noteSchema.parse(request.body);
 
@@ -668,6 +685,7 @@ export async function inpatientRoutes(app: FastifyInstance) {
   );
 
   app.get('/api/notes/recent', { preHandler: authenticate(CLINICAL_ROLES) }, async (request) => {
+    const db = facilityDb(request);
     const query = z
       .object({ limit: z.coerce.number().int().min(1).max(200).default(20) })
       .parse(request.query);
@@ -695,6 +713,7 @@ export async function inpatientRoutes(app: FastifyInstance) {
     '/api/patients/:patientId/notes',
     { preHandler: authenticate(CLINICAL_ROLES) },
     async (request) => {
+      const db = facilityDb(request);
       const { patientId } = patientIdParam.parse(request.params);
 
       return db
@@ -718,6 +737,7 @@ export async function inpatientRoutes(app: FastifyInstance) {
     '/api/patients/:patientId/vitals',
     { preHandler: authenticate(CLINICAL_ROLES) },
     async (request) => {
+      const db = facilityDb(request);
       const { patientId } = patientIdParam.parse(request.params);
 
       const rows = await db
@@ -750,6 +770,7 @@ export async function inpatientRoutes(app: FastifyInstance) {
     '/api/patients/:patientId/vitals',
     { preHandler: authenticate(VITALS_WRITE) },
     async (request) => {
+      const db = facilityDb(request);
       const { patientId } = patientIdParam.parse(request.params);
       const body = vitalsSchema.parse(request.body);
 

@@ -59,7 +59,13 @@ volume `external`, so `docker compose down` cannot delete clinic data. On a
 fresh machine create the volume first (`docker volume create hms_pgdata`) or
 drop those lines to let Compose manage its own.
 
-### Seeded logins
+### Sign-in and seeded logins
+
+Sign-in takes three things: the **hospital code**, the work email and the password.
+The code is a facility's slug — `cyber-hospitals` for the first clinic, named by
+`FIRST_FACILITY_SLUG` before the first migration runs — because the same email
+address can exist at two hospitals and a session must open exactly one of them.
+The browser remembers the last code used, so staff type it once per machine.
 
 There is no shared or default password anywhere in this repository. The seed
 creates exactly one account that can sign in — `admin@clinic.test` — and its
@@ -77,6 +83,115 @@ administrator-only, all audited.
 
 The seed stops when the database holds any staff at all. `--force` re-runs it
 against a populated database and adds a second cohort.
+
+## Several hospitals on one deployment
+
+One codebase, one Postgres cluster, one schema per hospital. `public.facilities` is the
+registry — slug, display name, schema name, status — and every clinical table lives in
+`f_<slug>` alongside that hospital's own `patient_mrn_seq` and `invoice_number_seq`, so
+MRNs and invoice numbers start again at 1 for each clinic instead of being handed out
+across the platform. Shared enums stay in `public`: a status means the same thing at
+every hospital.
+
+Isolation is enforced by the database rather than by a `WHERE` clause. Each hospital
+gets a pool whose connections open with `-csearch_path=f_<slug>,public -crole=f_<slug>`,
+so every query runs as that hospital's `nologin` role. The role is a **grantee, not an
+owner**: the schema and its tables belong to the login that migrates them, while
+`f_<slug>` holds `usage` on `public` (to name the shared enum types) and on its own
+schema, plus read/write on its own schema's tables, sequences and functions — and
+nothing else, not even `public.facilities`. Reaching another hospital therefore fails
+with `permission denied for schema f_other_clinic` even when the name is spelled out in
+full, and the role cannot create or drop a table either: it does DML inside one schema
+or nothing. Which hospital a request belongs to comes from the `facility` claim in its
+token — fixed when the person signs in — so there is no parameter a client can send to
+aim a session at a different clinic. `server/src/db/tenant.ts` holds the pools,
+`tenant-ddl.ts` the DDL, `provision.ts` the creating.
+
+### Adding a hospital
+
+Hospitals are added by a **platform administrator**: a separate identity from clinic
+staff, stored in `public.platform_admins`, with its own sign-in at `/platform`. The first
+one is made from a shell, because the screens that need it are the screens it protects:
+
+```
+npm run platform:admin --workspace server -- --name "Moses Obulei" --email ops@cyber.org
+```
+
+The password comes from `PLATFORM_ADMIN_PASSWORD` or is generated and printed once.
+
+That account signs in at `/platform` and runs the deployment from there: add a hospital
+with its first administrator, set one's name and identity, suspend or reactivate one, and
+manage that hospital's *administrators only* — add, rename, deactivate, or set a new
+password for one who lost it. Everything else inside a hospital (its staff, role grants,
+wards, tariffs, patients) is managed by that hospital's own administrators on its own
+screens; the console has no route to a nurse's account, and refuses one if asked.
+
+A hospital needs its first administrator at creation because everything else is managed
+inside it, and a hospital with no staff row has no way to make one. Two guards keep that
+true: the console will not deactivate the last administrator who can sign in, and will not
+remove the last operator, because a deployment nobody can sign in to is a deployment nobody
+can fix.
+
+Renaming changes the display name only. The address a hospital signs in at is never
+renamed: it names that hospital's schema and its database role, and every staff member has
+it memorised.
+
+Sign-in is forgiving about which of the two a person types. `POST /api/auth/login` matches
+the address case-insensitively and also accepts a hospital's display name, so Merid's staff
+reach their clinic with `soroti`, `Merid` or `MERID`. A name two hospitals share opens
+neither — the answer is the ordinary unknown-hospital one — so this cannot be used to probe
+the registry, and an address always works whatever other clinics are called.
+
+### What a hospital calls itself
+
+A hospital's own wording — the letter in the brand square, the line under its name, its
+accent colour, and the two sentences printed on a clinical report — is data, not code.
+Five columns on its registry row (`mark`, `tagline`, `accent`, `report_caption`,
+`report_footnote`, added by `migrations/registry/0002_facility_branding.sql`) hold it, and
+it travels with the session, so `client/src/branding.ts` only supplies the defaults for a
+hospital nobody has styled yet.
+
+Two screens write those five fields through one validator (`server/src/lib/branding.ts`):
+the operator's **Identity** dialog on `/platform`, and the hospital's own **Hospital
+identity** screen at `/settings`, which only its administrators can open. Each writes the
+registry row named by its caller's own token, never one chosen from the request body, so a
+hospital can style itself and nobody else. Every field is optional: a save that omits a
+line leaves it alone, and a blank line puts the default back. `accent` is restricted to
+`#rgb` or `#rrggbb` because the client hands it to CSS as `--brand`, and the stylesheet
+mixes its pale and dark shades from it — one field recolours buttons, links, the brand
+square and the report rules. A hospital's own save lands in its own `audit_log`
+(`settings.branding_updated`), because the request was bound to that schema before it
+wrote anything.
+
+Renaming stays the operator's job alone: the name is also an address staff may type, and
+two hospitals sharing a name makes that address ambiguous.
+
+A platform token carries `scope: platform` and names no facility; a staff token names a
+facility and carries no scope. Each guard accepts only its own kind, so the operator who
+creates hospitals cannot read a patient record and a hospital administrator cannot reach
+`/api/platform`. Platform actions go to the server log rather than to an `audit_log`,
+because a hospital's audit trail belongs to that hospital alone.
+
+Suspending is immediate and reversible: sign-in resolves only `active` registry rows and
+every request re-reads the registry, so a token minted minutes earlier starts returning
+401 without waiting to expire. Nothing is deleted — the schema and its data wait for the
+hospital to be reopened.
+
+Three harnesses prove all of this without touching a real database. Each builds a scratch
+database, runs the API against it, and drops it again:
+
+```
+npx tsx .run/http_platform_e2e.mts     # adding a hospital, isolation, suspension
+npx tsx .run/http_admin_crud_e2e.mts   # the new administrator's own CRUD, module by module
+npx tsx .run/http_branding_e2e.mts     # both editors of a hospital's identity, and what neither may touch
+```
+
+The second one is the answer to "does a hospital created here actually work": its
+administrator registers a patient (first MRN is `MRN-000001`, not the next number in the
+other clinic's sequence), staff, wards and beds, admissions and vitals, appointments,
+prescriptions and dispensing, lab tests through to a countersigned result, invoices and
+payments, and a signed report — then `psql` confirms every row landed in `f_<slug>` and that
+the older hospital still holds only its own.
 
 ## Roles
 
@@ -149,40 +264,67 @@ converts at the boundary — do not do arithmetic on a raw row value.
 start.sh / stop.sh  one-command dev lifecycle; logs and PIDs in .run/
 .nvmrc              Node version the toolchain is known to work on
 server/src/
-  db/schema/        tables + enums (one file, exported through index.ts)
+  db/schema/        tables + enums (one file, exported through index.ts);
+                    registry.ts and platform.ts are the shared `public` tables
   db/advanced.ts    constraints and indexes applied after each migration
-  db/migrate.ts     sequences → drizzle migrate → advanced constraints
+  db/migrate.ts     shared enums → registry SQL → first facility → every schema
+  db/tenant.ts      one pool per hospital, opened with its own search_path and role
+  db/tenant-ddl.ts  the DDL and constraints each facility schema is kept up to
+  db/provision.ts   creating a hospital, its first administrator, a platform account
+  db/bootstrap-platform.ts the first platform administrator, from a shell
   db/seed.ts        demo clinic
-  lib/              auth, RBAC, password, audit, errors, money serialisation
+  lib/              auth, RBAC, password, audit, errors, branding fields, money serialisation
   modules/          auth, staff, patients, appointments, inpatient, pharmacy,
-                    lab, billing, reports, dashboard, audit
+                    lab, billing, reports, dashboard, audit, settings
+                    platform.routes.ts and settings.routes.ts are the only modules
+                    that write `public`; settings does it for one hospital, to itself
 client/src/
-  api.ts            fetch wrapper: bearer token, ApiError, 401 → sign-in
+  api.ts            fetch wrapper: bearer token, ApiError, 401 → sign-in;
+                    platformApi() is the same wrapper over the operator token
   auth.tsx          session context, active-role switching, can(user, roles)
+  platform-auth.tsx operator session for /platform
   roles.ts          the seven role names, labels and badge tones in one place
-  layout.tsx        role-filtered sidebar and route visibility rule
+  branding.ts       the defaults shown before anyone signs in, plus brandFor(user),
+                    which resolves one session into the wording that hospital owns
+  layout.tsx        role-filtered sidebar, route visibility rule, page title, and the
+                    hospital's accent set on the document root as --brand
   components.tsx    shared form/table/badge/modal primitives
   reports.tsx       report form, printable document and list (used by two pages)
-  pages/            one screen per area
+  pages/            one screen per area; Platform* screens are the operator console,
+                    SettingsPage is the hospital editing its own identity
 ```
 
 ## Before going live
 
 1. Set `JWT_SECRET` to a long random value and keep `.env` out of version control.
-2. Sign in as the seeded administrator, change that password (`POST /api/auth/change-password`),
-   then create the clinic's real staff accounts from the Staff screen. The seeded author rows
-   cannot sign in and need no cleanup — delete them if you want the demo history gone.
+2. Sign in with your hospital code as the seeded administrator, change that password
+   (`POST /api/auth/change-password`), then create the clinic's real staff accounts from the
+   Staff screen. The seeded author rows cannot sign in and need no cleanup — delete them if
+   you want the demo history gone.
 
 One consequence of that choice: `/api/staff/bookable` only lists active clinicians, so on a
 freshly seeded database the appointment and admission pickers are empty until you activate a
 doctor or nurse on the Staff screen.
-3. Put the API behind TLS and set `APP_ORIGIN` to the real client origin.
-4. Replace the hard-coded per-day bed tariffs in `server/src/modules/billing.routes.ts`
+3. Create the platform operator with `PLATFORM_ADMIN_PASSWORD` set to the password you want it
+   to have. Sign in at `/platform`, add each real hospital there with its first
+   administrator, then open **Operators** and add a second operator for whoever covers for
+   you — one account per person, so the bootstrap account is never shared. Operators cannot
+   change their own password in the product (re-running the bootstrap on an existing email
+   will not do it either), so treat that password like the other deployment secrets; hospital
+   administrators do change theirs in the product (`POST /api/auth/change-password`), and the
+   console can set a new one for an administrator who lost theirs.
+4. Put the API behind TLS and set `APP_ORIGIN` to the real client origin.
+5. Replace the hard-coded per-day bed tariffs in `server/src/modules/billing.routes.ts`
    (`ICU_DAILY_TARIFF`, `GENERAL_DAILY_TARIFF`) with a tariff table — ICU and coronary beds are
    currently charged a flat premium and everything else a general rate.
-5. Arrange Postgres backups. The audit log is append-only but has no retention policy yet.
+6. Arrange Postgres backups. The audit log is append-only but has no retention policy yet.
    A dump into a directory git ignores, as the handover did, is enough to start:
    `docker exec hms-postgres pg_dump -U hms hms > "$(mkdir -p .run && echo .run)/backup.dump"`.
+   Once a deployment holds several hospitals, back each one up on its own schedule so one
+   clinic's data can be restored without rolling back the others:
+   `docker exec hms-postgres pg_dump -U hms -n f_<slug> hms > .run/<slug>.dump`. The shared
+   `public` schema — the registry and the platform administrators — needs dumping too, and
+   restoring it is the step that decides which hospitals the API is willing to open at all.
 
 ### Remaining `npm audit` findings
 

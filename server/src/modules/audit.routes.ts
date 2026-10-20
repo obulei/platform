@@ -1,9 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import { and, count, desc, eq, gte, ilike, lte, or } from 'drizzle-orm';
 import { z } from 'zod';
-import { db } from '../db/client.js';
 import { auditLog, staff } from '../db/schema/index.js';
-import { authenticate, ROLES } from '../lib/auth.js';
+import {
+  authenticate,
+  ROLES,
+  facilityDb
+} from '../lib/auth.js';
 import { audit } from '../lib/audit.js';
 import { badRequest } from '../lib/errors.js';
 
@@ -72,6 +75,7 @@ export async function auditRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authenticate([ROLES.admin]));
 
   app.get('/api/audit', async (request) => {
+    const db = facilityDb(request);
     const query = listSchema.parse(request.query);
 
     const filters = [];
@@ -130,6 +134,7 @@ export async function auditRoutes(app: FastifyInstance) {
 
   /** The trail for one record, newest first. Not audited, to avoid recursion noise. */
   app.get('/api/audit/entities/:entity/:entityId', async (request) => {
+    const db = facilityDb(request);
     const { entity, entityId } = z
       .object({ entity: z.string().max(60), entityId: z.string().uuid() })
       .parse(request.params);
@@ -150,6 +155,7 @@ export async function auditRoutes(app: FastifyInstance) {
   });
 
   app.get('/api/audit/export', async (request, reply) => {
+    const db = facilityDb(request);
     const query = z
       .object({
         from: z.coerce.date(),

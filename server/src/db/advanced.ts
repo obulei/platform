@@ -1,11 +1,15 @@
-import { pgClient } from './client.js';
+import type postgres from 'postgres';
 
 /**
  * Constraints that Drizzle's table DSL cannot express: exclusion constraints,
  * partial unique indexes and CHECK guards. Every statement is idempotent so
  * this can run on every migration.
+ *
+ * Takes the connection to work on because these statements name tables
+ * unqualified: run it on a facility connection and the guards land inside that
+ * facility's schema.
  */
-export async function applyAdvancedConstraints(): Promise<void> {
+export async function applyAdvancedConstraints(client: postgres.Sql): Promise<void> {
   const statements = [
     `create extension if not exists btree_gist`,
 
@@ -77,9 +81,9 @@ export async function applyAdvancedConstraints(): Promise<void> {
   // is already in place as a NOTICE ("… already exists, skipping"). postgres.js
   // surfaces those on the console, where they read like failures — so drop the
   // message floor to warnings for this connection.
-  await pgClient.unsafe(`set client_min_messages to warning`);
+  await client.unsafe(`set client_min_messages to warning`);
 
   for (const statement of statements) {
-    await pgClient.unsafe(statement);
+    await client.unsafe(statement);
   }
 }

@@ -1,11 +1,13 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
-import { api, session, type SessionUser } from './api';
+import { api, session, type FacilityRef, type SessionUser } from './api';
 
 interface AuthState {
   user: SessionUser | null;
-  signIn: (email: string, password: string, role?: string) => Promise<void>;
+  signIn: (facility: string, email: string, password: string, role?: string) => Promise<void>;
   /** Change which granted role the session acts as. Keeps every screen open. */
   switchRole: (role: string) => Promise<void>;
+  /** Re-store this hospital's wording after a Settings save. Keeps every screen open. */
+  saveFacility: (facility: FacilityRef) => void;
   signOut: () => void;
 }
 
@@ -14,12 +16,15 @@ const AuthContext = createContext<AuthState | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<SessionUser | null>(() => session.user());
 
-  const signIn = useCallback(async (email: string, password: string, role?: string) => {
+  // The hospital code is part of the credentials: the same work email can exist
+  // at two facilities, and this chooses whose records the session opens.
+  const signIn = useCallback(async (facility: string, email: string, password: string, role?: string) => {
     const result = await api<{ token: string; user: SessionUser }>('/api/auth/login', {
       method: 'POST',
-      body: { email, password, ...(role ? { role } : {}) }
+      body: { facility: facility.trim(), email, password, ...(role ? { role } : {}) }
     });
     session.save(result.token, result.user);
+    session.rememberFacility(result.user.facility.slug);
     setUser(result.user);
   }, []);
 
@@ -32,12 +37,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(result.user);
   }, []);
 
+  const saveFacility = useCallback((facility: FacilityRef) => {
+    const token = session.token();
+    const stored = session.user();
+    if (!token || !stored) return;
+    // The token is not re-signed: the facility claim names the same row, only the
+    // wording carried beside it changed.
+    const next = { ...stored, facility };
+    session.save(token, next);
+    setUser(next);
+  }, []);
+
   const signOut = useCallback(() => {
     session.clear();
     setUser(null);
   }, []);
 
-  const value = useMemo(() => ({ user, signIn, switchRole, signOut }), [user, signIn, switchRole, signOut]);
+  const value = useMemo(
+    () => ({ user, signIn, switchRole, saveFacility, signOut }),
+    [user, signIn, switchRole, saveFacility, signOut]
+  );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

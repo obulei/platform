@@ -23,5 +23,12 @@ export const env = {
   jwtSecret: required('JWT_SECRET'),
   port: Number(process.env.PORT ?? 8080),
   appOrigin: process.env.APP_ORIGIN ?? 'http://localhost:5173',
-  nodeEnv: process.env.NODE_ENV ?? 'development'
+  nodeEnv: process.env.NODE_ENV ?? 'development',
+  /**
+   * Read once, by the migration that moves a pre-tenancy database's tables into
+   * their own schema. After that the registry names the facilities and these are
+   * never consulted again.
+   */
+  firstFacilitySlug: process.env.FIRST_FACILITY_SLUG ?? 'cyber-hospitals',
+  firstFacilityName: process.env.FIRST_FACILITY_NAME ?? 'Cyber Hospitals'
 };

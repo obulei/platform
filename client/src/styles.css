@@ -7,9 +7,14 @@
   --text: #16202e;
   --text-muted: #5b6b82;
   --text-subtle: #8492a6;
+  /*
+   * One accent per hospital. A clinic's own colour arrives on the document root as
+   * `--brand` (see layout.tsx), and these two shades are mixed from it there, so
+   * recolouring a hospital moves its buttons, links and report rules together.
+   */
   --brand: #12628f;
-  --brand-strong: #0c4d72;
-  --brand-soft: #e7f0f6;
+  --brand-strong: color-mix(in oklab, var(--brand), black 26%);
+  --brand-soft: color-mix(in oklab, var(--brand) 12%, white);
   --clinical: #5b3fa8;
   --success: #17724a;
   --success-soft: #e3f4ea;
@@ -108,7 +113,7 @@ a:hover {
   width: 30px;
   height: 30px;
   border-radius: 8px;
-  background: linear-gradient(145deg, #2c8fc0, #12628f);
+  background: linear-gradient(145deg, color-mix(in oklab, var(--brand), white 24%), var(--brand-strong));
   display: grid;
   place-items: center;
   font-weight: 700;
@@ -1289,6 +1294,12 @@ select.control {
   display: flex;
   flex-direction: column;
   gap: 13px;
+}
+
+.login-foot {
+  margin: 18px 0 0;
+  font-size: 13px;
+  color: var(--text-muted);
 }
 
 /* ------------------------------------------------------------ utilities */

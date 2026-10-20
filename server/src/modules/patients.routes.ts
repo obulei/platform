@@ -1,7 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { and, count, desc, eq, ilike, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { db } from '../db/client.js';
 import {
   admissions,
   appointments,
@@ -16,6 +15,7 @@ import {
 } from '../db/schema/index.js';
 import {
   authenticate,
+  facilityDb,
   CLINICAL_ROLES,
   PATIENT_RECORD_READ,
   PATIENT_RECORD_WRITE
@@ -86,6 +86,7 @@ export async function patientRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authenticate(PATIENT_RECORD_READ));
 
   app.get('/api/patients', async (request) => {
+    const db = facilityDb(request);
     const query = z
       .object({
         q: z.string().max(120).optional(),
@@ -129,6 +130,7 @@ export async function patientRoutes(app: FastifyInstance) {
   });
 
   app.get('/api/patients/:id', async (request) => {
+    const db = facilityDb(request);
     const { id } = idParam.parse(request.params);
     const [row] = await db.select().from(patients).where(eq(patients.id, id)).limit(1);
     if (!row) throw notFound('Patient');
@@ -165,6 +167,7 @@ export async function patientRoutes(app: FastifyInstance) {
    * reception and billing get the administrative skeleton of the same timeline.
    */
   app.get('/api/patients/:id/history', async (request) => {
+    const db = facilityDb(request);
     const { id } = idParam.parse(request.params);
     const [patient] = await db.select().from(patients).where(eq(patients.id, id)).limit(1);
     if (!patient) throw notFound('Patient');
@@ -267,6 +270,7 @@ export async function patientRoutes(app: FastifyInstance) {
   });
 
   app.post('/api/patients', async (request) => {
+    const db = facilityDb(request);
     const body = createSchema.parse(request.body);
     const [row] = await db
       .insert(patients)
@@ -283,6 +287,7 @@ export async function patientRoutes(app: FastifyInstance) {
   });
 
   app.patch('/api/patients/:id', async (request) => {
+    const db = facilityDb(request);
     const { id } = idParam.parse(request.params);
     const body = demographics
       .extend({ status: z.enum(['active', 'inactive', 'deceased']).optional() })

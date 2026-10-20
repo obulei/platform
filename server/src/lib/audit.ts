@@ -1,11 +1,13 @@
 import type { FastifyRequest } from 'fastify';
-import { db } from '../db/client.js';
 import { auditLog } from '../db/schema/index.js';
+import { facilityDb } from './auth.js';
 
 /**
- * Append-only record of who changed what. Called from each mutation after the
- * write succeeds, so the trail reflects committed effects rather than attempts.
- * A failed audit write must not roll back a clinical action, hence the catch.
+ * Append-only record of who changed what, written into the caller's own
+ * facility schema so each hospital keeps its own trail. Called from each
+ * mutation after the write succeeds, so the trail reflects committed effects
+ * rather than attempts. A failed audit write must not roll back a clinical
+ * action, hence the catch.
  */
 export async function audit(
   request: FastifyRequest,
@@ -17,7 +19,9 @@ export async function audit(
   }
 ): Promise<void> {
   try {
-    await db.insert(auditLog).values({
+    await facilityDb(request)
+      .insert(auditLog)
+      .values({
       staffId: request.currentUser?.id ?? null,
       action: entry.action,
       entity: entry.entity,

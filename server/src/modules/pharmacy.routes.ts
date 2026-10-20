@@ -1,7 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { and, asc, count, desc, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { db } from '../db/client.js';
 import {
   medicines,
   patients,
@@ -14,7 +13,11 @@ import {
   prescriptionStatus,
   stockMovementReason
 } from '../db/schema/index.js';
-import { authenticate, ROLES } from '../lib/auth.js';
+import {
+  authenticate,
+  ROLES,
+  facilityDb
+} from '../lib/auth.js';
 import { audit } from '../lib/audit.js';
 import { badRequest, conflict, notFound } from '../lib/errors.js';
 import { money } from '../lib/serialize.js';
@@ -116,6 +119,7 @@ export async function pharmacyRoutes(app: FastifyInstance) {
   /* ----------------------------- Catalogue reads ----------------------------- */
 
   app.get('/api/medicines', async (request) => {
+    const db = facilityDb(request);
     const query = z
       .object({
         q: z.string().max(160).optional(),
@@ -159,7 +163,8 @@ export async function pharmacyRoutes(app: FastifyInstance) {
    * Dashboard warning feed: every active medicine at or below its reorder
    * point, worst (most deficient) first.
    */
-  app.get('/api/medicines/low-stock', async () => {
+  app.get('/api/medicines/low-stock', async (request) => {
+    const db = facilityDb(request);
     const rows = await db
       .select()
       .from(medicines)
@@ -169,6 +174,7 @@ export async function pharmacyRoutes(app: FastifyInstance) {
   });
 
   app.get('/api/medicines/:id', async (request) => {
+    const db = facilityDb(request);
     const { id } = idParam.parse(request.params);
     const [row] = await db.select().from(medicines).where(eq(medicines.id, id)).limit(1);
     if (!row) throw notFound('Medicine');
@@ -202,6 +208,7 @@ export async function pharmacyRoutes(app: FastifyInstance) {
   /* ----------------------------- Catalogue writes ---------------------------- */
 
   app.post('/api/medicines', { preHandler: authenticate(PHARMACY_WRITE) }, async (request) => {
+    const db = facilityDb(request);
     const body = createMedicineSchema.parse(request.body);
 
     const [row] = await db
@@ -239,6 +246,7 @@ export async function pharmacyRoutes(app: FastifyInstance) {
   });
 
   app.patch('/api/medicines/:id', { preHandler: authenticate(PHARMACY_WRITE) }, async (request) => {
+    const db = facilityDb(request);
     const { id } = idParam.parse(request.params);
     const body = updateMedicineSchema.parse(request.body);
 
@@ -278,6 +286,7 @@ export async function pharmacyRoutes(app: FastifyInstance) {
     '/api/medicines/:id/adjust-stock',
     { preHandler: authenticate(PHARMACY_WRITE) },
     async (request) => {
+      const db = facilityDb(request);
       const { id } = idParam.parse(request.params);
       const body = adjustStockSchema.parse(request.body);
 
@@ -329,6 +338,7 @@ export async function pharmacyRoutes(app: FastifyInstance) {
   /* ------------------------------ Prescriptions ------------------------------ */
 
   app.get('/api/prescriptions', async (request) => {
+    const db = facilityDb(request);
     const query = z
       .object({
         status: statusEnum.optional(),
@@ -379,6 +389,7 @@ export async function pharmacyRoutes(app: FastifyInstance) {
   });
 
   app.get('/api/prescriptions/:id', async (request) => {
+    const db = facilityDb(request);
     const { id } = idParam.parse(request.params);
 
     const [header] = await db
@@ -438,6 +449,7 @@ export async function pharmacyRoutes(app: FastifyInstance) {
   });
 
   app.post('/api/prescriptions', { preHandler: authenticate(PRESCRIBERS) }, async (request) => {
+    const db = facilityDb(request);
     const body = createPrescriptionSchema.parse(request.body);
 
     const medicineIds = [...new Set(body.items.map((item) => item.medicineId))];
@@ -493,6 +505,7 @@ export async function pharmacyRoutes(app: FastifyInstance) {
   });
 
   app.post('/api/prescriptions/:id/cancel', { preHandler: authenticate(PRESCRIBERS) }, async (request) => {
+    const db = facilityDb(request);
     const { id } = idParam.parse(request.params);
 
     const [existing] = await db
@@ -536,6 +549,7 @@ export async function pharmacyRoutes(app: FastifyInstance) {
     '/api/prescriptions/:id/dispense',
     { preHandler: authenticate(PHARMACY_WRITE) },
     async (request) => {
+      const db = facilityDb(request);
       const { id } = idParam.parse(request.params);
       const body = dispenseSchema.parse(request.body);
 
@@ -637,7 +651,8 @@ export async function pharmacyRoutes(app: FastifyInstance) {
   app.get(
     '/api/pharmacy/queue',
     { preHandler: authenticate(QUEUE_ROLES) },
-    async () => {
+    async (request) => {
+      const db = facilityDb(request);
       const rows = await db
         .select({
           id: prescriptions.id,

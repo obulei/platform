@@ -1,10 +1,14 @@
 import type { FastifyInstance } from 'fastify';
 import { and, asc, count, eq, gte, inArray, isNull, lt, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { db } from '../db/client.js';
 import { appointments, patients, staff, staffRoles } from '../db/schema/index.js';
 import type { appointmentStatus } from '../db/schema/enums.js';
-import { authenticate, ROLES } from '../lib/auth.js';
+import {
+  authenticate,
+  ROLES,
+  facilityDb,
+  type TenantDb
+} from '../lib/auth.js';
 import { audit } from '../lib/audit.js';
 import { badRequest, notFound } from '../lib/errors.js';
 import { money, moneyOrNull } from '../lib/serialize.js';
@@ -47,7 +51,7 @@ const toDto = (row: typeof appointments.$inferSelect & { patientName?: string; c
   clinicianSpecialty: row.clinicianSpecialty
 });
 
-const selectWithNames = () =>
+const selectWithNames = (db: TenantDb) =>
   db
     .select({
       appointment: appointments,
@@ -64,6 +68,7 @@ export async function appointmentRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authenticate());
 
   app.get('/api/appointments', async (request) => {
+    const db = facilityDb(request);
     const query = z
       .object({
         date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
@@ -90,7 +95,7 @@ export async function appointmentRoutes(app: FastifyInstance) {
     if (query.status) filters.push(eq(appointments.status, query.status));
 
     const where = filters.length ? and(...filters) : undefined;
-    const rows = await selectWithNames()
+    const rows = await selectWithNames(db)
       .where(where)
       .orderBy(asc(appointments.startsAt))
       .limit(query.limit);
@@ -100,6 +105,7 @@ export async function appointmentRoutes(app: FastifyInstance) {
 
   /** Bookings for one clinician on one day — the data behind the day board. */
   app.get('/api/appointments/schedule', async (request) => {
+    const db = facilityDb(request);
     const query = z
       .object({
         date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -155,13 +161,15 @@ export async function appointmentRoutes(app: FastifyInstance) {
   });
 
   app.get('/api/appointments/:id', async (request) => {
+    const db = facilityDb(request);
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
-    const [row] = await selectWithNames().where(eq(appointments.id, id)).limit(1);
+    const [row] = await selectWithNames(db).where(eq(appointments.id, id)).limit(1);
     if (!row) throw notFound('Appointment');
     return toDto(row.appointment);
   });
 
   app.post('/api/appointments', { preHandler: authenticate(WRITE_ROLES) }, async (request) => {
+    const db = facilityDb(request);
     const body = createSchema.parse(request.body);
 
     const [patient] = await db
@@ -210,6 +218,7 @@ export async function appointmentRoutes(app: FastifyInstance) {
   });
 
   app.patch('/api/appointments/:id/status', { preHandler: authenticate(WRITE_ROLES) }, async (request) => {
+    const db = facilityDb(request);
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
     const body = statusSchema.parse(request.body);
 
@@ -243,6 +252,7 @@ export async function appointmentRoutes(app: FastifyInstance) {
     .refine((v) => v.endsAt > v.startsAt, { message: 'End time must be after the start time.' });
 
   app.patch('/api/appointments/:id', { preHandler: authenticate(WRITE_ROLES) }, async (request) => {
+    const db = facilityDb(request);
     const { id } = z.object({ id: z.string().uuid() }).parse(request.params);
     const body = rescheduleSchema.parse(request.body);
 

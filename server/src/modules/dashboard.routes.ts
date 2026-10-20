@@ -1,7 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { and, asc, count, desc, eq, gte, inArray, isNull, lt, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { db } from '../db/client.js';
 import {
   admissions,
   appointments,
@@ -17,7 +16,11 @@ import {
   staff,
   staffRoles
 } from '../db/schema/index.js';
-import { authenticate, ROLES } from '../lib/auth.js';
+import {
+  authenticate,
+  ROLES,
+  facilityDb
+} from '../lib/auth.js';
 
 /* postgres.js returns NUMERIC and COUNT(...) as strings; every value that
  * crosses into arithmetic or into JSON as a number is coerced here. */
@@ -56,6 +59,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authenticate());
 
   app.get('/api/dashboard', async (request) => {
+    const db = facilityDb(request);
     const { date } = dateSchema.parse(request.query);
     const isoDay = date ?? localDateStr(new Date());
     const { start: dayStart, end: dayEnd } = dayWindow(isoDay);
@@ -257,6 +261,7 @@ export async function dashboardRoutes(app: FastifyInstance) {
    *   2) the bed count as the flat capacity denominator.
    */
   app.get('/api/dashboard/occupancy-history', async (request) => {
+    const db = facilityDb(request);
     const { days } = z
       .object({ days: z.coerce.number().int().min(1).max(30).default(7) })
       .parse(request.query);

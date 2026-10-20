@@ -1,6 +1,7 @@
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { useAuth } from './auth.js';
+import { usePlatformAuth } from './platform-auth.js';
 import { Layout, navAllows } from './layout.js';
 import { EmptyState } from './components.js';
 import { LoginPage } from './pages/LoginPage.js';
@@ -15,8 +16,53 @@ import { LabPage } from './pages/LabPage.js';
 import { BillingPage } from './pages/BillingPage.js';
 import { StaffPage } from './pages/StaffPage.js';
 import { AuditPage } from './pages/AuditPage.js';
+import { SettingsPage } from './pages/SettingsPage.js';
+import { PlatformLoginPage } from './pages/PlatformLoginPage.js';
+import { PlatformHospitalsPage } from './pages/PlatformHospitalsPage.js';
+import { PlatformOperatorsPage } from './pages/PlatformOperatorsPage.js';
 
+/**
+ * Two apps share this bundle: the hospital one staff use, and `/platform`, which
+ * only the operator who adds hospitals can reach. They are separate route trees
+ * because they are separate identities — each one ignores the other's token.
+ */
 export function App() {
+  return (
+    <Routes>
+      <Route path="/platform/*" element={<PlatformApp />} />
+      <Route path="/*" element={<ClinicApp />} />
+    </Routes>
+  );
+}
+
+function PlatformApp() {
+  const { admin } = usePlatformAuth();
+
+  useEffect(() => {
+    const previous = document.title;
+    document.title = 'Hospital platform';
+    return () => {
+      document.title = previous;
+    };
+  }, []);
+
+  return (
+    <Routes>
+      <Route path="/login" element={<PlatformLoginPage />} />
+      <Route
+        path="/"
+        element={admin ? <PlatformHospitalsPage /> : <Navigate to="/platform/login" replace />}
+      />
+      <Route
+        path="/operators"
+        element={admin ? <PlatformOperatorsPage /> : <Navigate to="/platform/login" replace />}
+      />
+      <Route path="*" element={<Navigate to="/platform" replace />} />
+    </Routes>
+  );
+}
+
+function ClinicApp() {
   const { user } = useAuth();
 
   if (!user) {
@@ -42,6 +88,7 @@ export function App() {
         <Route path="/billing" element={<Guard path="/billing"><BillingPage /></Guard>} />
         <Route path="/staff" element={<Guard path="/staff"><StaffPage /></Guard>} />
         <Route path="/audit" element={<Guard path="/audit"><AuditPage /></Guard>} />
+        <Route path="/settings" element={<Guard path="/settings"><SettingsPage /></Guard>} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </Layout>

@@ -1,6 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import { and, eq, sql } from 'drizzle-orm';
-import { db, pgClient } from './client.js';
+import { env } from '../env.js';
+import { publicClient, publicDb } from './client.js';
+import { closeTenantPools, tenantDb } from './tenant.js';
+import { facilities } from './schema/registry.js';
 import {
   admissions,
   appointments,
@@ -127,18 +130,35 @@ function bootstrapPassword(): string {
 async function seed() {
   const force = process.argv.includes('--force');
 
+  // Seed data belongs to one hospital: the demo cohort is written into the
+  // facility named by FIRST_FACILITY_SLUG, never into `public`.
+  const [facility] = await publicDb
+    .select()
+    .from(facilities)
+    .where(eq(facilities.slug, env.firstFacilitySlug))
+    .limit(1);
+  if (!facility) {
+    throw new Error(
+      `No facility named "${env.firstFacilitySlug}" in the registry. Run the migrate script first — it creates the hospital and its schema.`
+    );
+  }
+  const db = tenantDb(facility).db;
+
   const [populated] = await db.select({ total: sql<number>`count(*)::int` }).from(staff);
 
   if (populated.total > 0 && !force) {
     console.log(
-      `Seed skipped: ${populated.total} staff account(s) already exist. Re-run with --force to add a second cohort.`
+      `Seed skipped: ${facility.name} already holds ${populated.total} staff account(s). Re-run with --force to add a second cohort.`
     );
-    await pgClient.end();
+    await closeTenantPools();
+    await publicClient.end();
     return;
   }
 
   const adminPassword = bootstrapPassword();
-  console.log(`Seeding ${STAFF_SEED.length} staff rows. Only ${ADMIN_EMAIL} will be able to sign in.`);
+  console.log(
+    `Seeding ${facility.name} with ${STAFF_SEED.length} staff rows. Only ${ADMIN_EMAIL} will be able to sign in.`
+  );
 
   const staffRows: (typeof staff.$inferSelect)[] = [];
   for (const record of STAFF_SEED) {
@@ -612,7 +632,7 @@ async function seed() {
     `  staff ${STAFF_SEED.length}  patients ${counts[0][0].c}  appointments ${counts[1][0].c}  beds ${counts[2][0].c}  medicines ${counts[3][0].c}`
   );
   console.log(
-    `  Sign in as ${ADMIN_EMAIL}. The other ${STAFF_SEED.length - 1} seeded staff rows are record`
+    `  Sign in at hospital "${facility.slug}" as ${ADMIN_EMAIL}. The other ${STAFF_SEED.length - 1} seeded staff rows are record`
   );
   console.log('  authors only: inactive, with password hashes that were never written down.');
   if (process.env.SEED_ADMIN_PASSWORD) {
@@ -623,7 +643,8 @@ async function seed() {
     console.log(`  Administrator password: ${adminPassword}`);
   }
 
-  await pgClient.end();
+  await closeTenantPools();
+  await publicClient.end();
 }
 
 seed().catch((error) => {

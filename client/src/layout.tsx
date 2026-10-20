@@ -1,9 +1,8 @@
-import type { ReactNode } from 'react';
-import { useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { can, useAuth } from './auth.js';
 import type { SessionUser } from './api';
-import { CLINIC } from './branding.js';
+import { brandFor } from './branding.js';
 import { ROLE_LABEL } from './roles.js';
 import { classList } from './utils.js';
 
@@ -73,6 +72,12 @@ const NAV: NavItem[] = [
     label: 'Audit trail',
     roles: [],
     icon: icon('M12 3 4 6v6c0 4.5 3.2 7.8 8 9 4.8-1.2 8-4.5 8-9V6l-8-3Zm-2 9 2 2 4-4')
+  },
+  {
+    to: '/settings',
+    label: 'Hospital identity',
+    roles: [],
+    icon: icon('M4 7h7m4 0h5M15 7a2 2 0 1 1-4 0 2 2 0 0 1 4 0ZM4 17h3m4 0h9M11 17a2 2 0 1 1-4 0 2 2 0 0 1 4 0Z')
   }
 ];
 
@@ -98,7 +103,8 @@ const TITLES: Record<string, string> = {
   '/lab': 'Laboratory',
   '/billing': 'Billing',
   '/staff': 'Staff accounts',
-  '/audit': 'Audit trail'
+  '/audit': 'Audit trail',
+  '/settings': 'Hospital identity'
 };
 
 export function Layout({ children }: { children: ReactNode }) {
@@ -107,6 +113,29 @@ export function Layout({ children }: { children: ReactNode }) {
   const navigate = useNavigate();
   const [switchError, setSwitchError] = useState<string | null>(null);
   const [switching, setSwitching] = useState(false);
+
+  // The wording this hospital owns, resolved once for the whole shell. With
+  // several clinics on one deployment, branding.ts is only the fallback: an
+  // administrator of one hospital must not be looking at another's name, letter,
+  // colour or tagline.
+  const brand = brandFor(user);
+
+  useEffect(() => {
+    document.title = brand.name;
+  }, [brand.name]);
+
+  // A hospital's accent is the one colour the whole stylesheet is built on, so it
+  // is set on the document root: the pale and dark shades the sheet mixes from it
+  // then follow, on every screen and on a printed report. Clearing the colour lets
+  // the previous effect's cleanup restore the default.
+  useEffect(() => {
+    const root = document.documentElement;
+    if (!brand.accent) return;
+    root.style.setProperty('--brand', brand.accent);
+    return () => {
+      root.style.removeProperty('--brand');
+    };
+  }, [brand.accent]);
 
   const section = '/' + (location.pathname.split('/')[1] ?? '');
   const title = TITLES[section] ?? TITLES['/'];
@@ -136,11 +165,11 @@ export function Layout({ children }: { children: ReactNode }) {
       <nav className="sidebar" aria-label="Main navigation">
         <div className="brand">
           <span className="brand-mark" aria-hidden="true">
-            {CLINIC.mark}
+            {brand.mark}
           </span>
           <span className="brand-text">
-            <strong>{CLINIC.name}</strong>
-            <span>{CLINIC.tagline}</span>
+            <strong>{brand.name}</strong>
+            <span>{brand.tagline}</span>
           </span>
         </div>
 
@@ -166,7 +195,7 @@ export function Layout({ children }: { children: ReactNode }) {
 
         <span className="nav-group-label">Administration</span>
         {visible
-          .filter((item) => ['/billing', '/staff', '/audit'].includes(item.to))
+          .filter((item) => ['/billing', '/staff', '/audit', '/settings'].includes(item.to))
           .map((item) => (
             <NavLink key={item.to} to={item.to} className={({ isActive }) => classList('nav-link', isActive && 'is-active')}>
               {item.icon}
@@ -205,7 +234,7 @@ export function Layout({ children }: { children: ReactNode }) {
       <div className="main">
         <header className="topbar">
           <div>
-            <div className="crumb">{CLINIC.name} · {user?.department ?? 'General'}</div>
+            <div className="crumb">{brand.name} · {user?.department ?? 'General'}</div>
             <h1>{title}</h1>
           </div>
           <div className="topbar-actions">

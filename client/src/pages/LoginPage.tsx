@@ -1,14 +1,20 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ApiError } from '../api.js';
+import { ApiError, session } from '../api.js';
 import { useAuth } from '../auth.js';
 import { CLINIC } from '../branding.js';
 import { roleLabel } from '../roles.js';
 import { Button, ErrorNote, Field, Input, Select } from '../components.js';
 
 export function LoginPage() {
+  useEffect(() => {
+    // Whoever signed in here before leaving named the tab after their hospital.
+    document.title = CLINIC.name;
+  }, []);
+
   const { signIn } = useAuth();
   const navigate = useNavigate();
+  const [facility, setFacility] = useState(() => session.lastFacility());
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [roleChoices, setRoleChoices] = useState<string[]>([]);
@@ -21,7 +27,7 @@ export function LoginPage() {
     setBusy(true);
     setError(null);
     try {
-      await signIn(email.trim(), password, activeRole || undefined);
+      await signIn(facility.trim(), email.trim(), password, activeRole || undefined);
       navigate('/', { replace: true });
     } catch (caught) {
       // An account can hold several roles. Once the password checks out the
@@ -38,6 +44,7 @@ export function LoginPage() {
   }
 
   const needsRole = roleChoices.length > 0;
+  const address = facility.trim();
 
   return (
     <div className="login-wrap">
@@ -52,6 +59,29 @@ export function LoginPage() {
         </div>
         <h1>Staff sign in</h1>
         <p>Patient records are role-restricted. Everything you do here is logged.</p>
+
+        <Field
+          label="Hospital"
+          required
+          hint={
+            address
+              ? `Signing in to “${address}”. Type the address your hospital was given — its name works too, as long as no other hospital shares it.`
+              : 'The address your hospital was given, for example cyber-hospitals. Its name works too.'
+          }
+        >
+          <Input
+            value={facility}
+            autoComplete="organization"
+            spellCheck={false}
+            onChange={(event) => {
+              setFacility(event.target.value);
+              setRoleChoices([]);
+              setActiveRole('');
+            }}
+            placeholder="cyber-hospitals"
+            required
+          />
+        </Field>
 
         <Field label="Work email" required>
           <Input
@@ -96,12 +126,20 @@ export function LoginPage() {
         )}
 
         <ErrorNote error={error} onDismiss={() => setError(null)} />
+        {!!error && address && (
+          // The server keeps its answer deliberately vague, so name the door this
+          // attempt knocked on: a remembered address from another hospital is the
+          // most common reason a correct email and password still fail.
+          <p className="login-foot">
+            This attempt was sent to the hospital address “{address}”.
+          </p>
+        )}
 
         <Button
           type="submit"
           variant="primary"
           loading={busy}
-          disabled={!email || !password || (needsRole && !activeRole)}
+          disabled={!facility || !email || !password || (needsRole && !activeRole)}
         >
           Sign in
         </Button>

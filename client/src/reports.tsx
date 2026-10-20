@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 import { api } from './api.js';
 import { useAuth } from './auth.js';
-import { CLINIC } from './branding.js';
+import { brandFor } from './branding.js';
 import {
   Badge,
   Button,
@@ -554,18 +554,27 @@ function Section({ heading, children }: { heading: string; children: ReactNode }
   );
 }
 
-/** The printed artefact. Everything inside stays when the app chrome is hidden. */
+/**
+ * The printed artefact. Everything inside stays when the app chrome is hidden.
+ *
+ * A report leaves the clinic in a patient's hands, so it carries the issuing
+ * hospital's own name, mark, heading line and footnote — all from the signed-in
+ * session and its registry row, never from `branding.ts`, which is deliberately
+ * anonymous now that several hospitals share this build.
+ */
 export function ReportDocumentView({ doc }: { doc: ReportDocument }) {
+  const { user } = useAuth();
+  const brand = brandFor(user);
   return (
     <article className="report-doc">
       <header className="report-head">
         <div className="brand-line">
           <span className="brand-mark" aria-hidden="true">
-            {CLINIC.mark}
+            {brand.mark}
           </span>
           <div>
-            <strong>{CLINIC.name}</strong>
-            <span>Clinical report · {CLINIC.tagline}</span>
+            <strong>{brand.name}</strong>
+            <span>{brand.reportCaption}</span>
           </div>
         </div>
         <div className="report-ref">
@@ -816,9 +825,7 @@ export function ReportDocumentView({ doc }: { doc: ReportDocument }) {
           </span>
           <span className="mono">{dashOr(doc.author?.email)}</span>
         </div>
-        <p className="report-foot-note">
-          Issued from the {CLINIC.name} record. Every read and edit of this document is logged in the audit trail.
-        </p>
+        <p className="report-foot-note">{brand.reportFootnote}</p>
       </footer>
     </article>
   );

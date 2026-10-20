@@ -2,8 +2,11 @@ import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import jwt from '@fastify/jwt';
 import { env } from './env.js';
+import { publicClient } from './db/client.js';
+import { closeTenantPools } from './db/tenant.js';
 import { registerErrorHandler } from './lib/errors.js';
 import { authRoutes } from './modules/auth.routes.js';
+import { platformRoutes } from './modules/platform.routes.js';
 import { staffRoutes } from './modules/staff.routes.js';
 import { patientRoutes } from './modules/patients.routes.js';
 import { appointmentRoutes } from './modules/appointments.routes.js';
@@ -13,6 +16,7 @@ import { labRoutes } from './modules/lab.routes.js';
 import { billingRoutes } from './modules/billing.routes.js';
 import { dashboardRoutes } from './modules/dashboard.routes.js';
 import { auditRoutes } from './modules/audit.routes.js';
+import { settingsRoutes } from './modules/settings.routes.js';
 import { reportRoutes } from './modules/reports.routes.js';
 
 const app = Fastify({
@@ -29,6 +33,13 @@ await app.register(jwt, { secret: env.jwtSecret });
 
 registerErrorHandler(app);
 
+// One pool per hospital stays open for the process lifetime, so shutdown has to
+// close them all — otherwise `app.close()` leaves sockets open and the exit hangs.
+app.addHook('onClose', async () => {
+  await closeTenantPools();
+  await publicClient.end();
+});
+
 app.get('/api/health', async () => ({
   status: 'ok',
   time: new Date().toISOString(),
@@ -37,6 +48,7 @@ app.get('/api/health', async () => ({
 
 // Each module is encapsulated so its auth hook does not leak onto others.
 await app.register(authRoutes);
+await app.register(platformRoutes);
 await app.register(staffRoutes);
 await app.register(patientRoutes);
 await app.register(appointmentRoutes);
@@ -47,6 +59,7 @@ await app.register(reportRoutes);
 await app.register(billingRoutes);
 await app.register(dashboardRoutes);
 await app.register(auditRoutes);
+await app.register(settingsRoutes);
 
 app
   .listen({ port: env.port, host: '127.0.0.1' })
